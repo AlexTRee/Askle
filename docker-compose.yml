@@ -1,0 +1,13 @@
+# docker-compose.yml
+version: '3.8'
+
+services:
+  mongodb:
+    image: mongo:latest
+    container_name: research-assistant-mongodb
+    restart: always
+    volumes:
+      - mongo_data:/data/db
+    ports:
+      - "27017:27017"
+    networks:
