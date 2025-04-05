@@ -1,5 +1,5 @@
 # app.py - FastAPI Backend
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, APIRouter
 from pydantic import BaseModel
 import uvicorn
 import os
@@ -8,6 +8,8 @@ import asyncio
 import logging
 import datetime
 from motor.motor_asyncio import AsyncIOMotorClient
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 # Import custom modules
 from modules.paper_retrieval import PubMedRetriever, GoogleScholarRetriever
@@ -20,6 +22,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Lung Cancer Research Assistant")
+
+# Create API router with prefix
+api_router = APIRouter(prefix="/api")
 
 # Environment variables (should be in .env file)
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
@@ -156,12 +161,12 @@ async def search_papers(query_text, limit=10):
         logger.error(f"Error searching papers: {e}")
         return []
     
-# Routes
-@app.get("/")
-async def root():
+# API Routes
+@api_router.get("/")
+async def api_root():
     return {"message": "Lung Cancer Research Assistant API"}
 
-@app.post("/ask", response_model=QuestionResponse)
+@api_router.post("/ask", response_model=QuestionResponse)
 async def ask_question(question: Question, background_tasks: BackgroundTasks):
     """
     Process a user question and return relevant paper summaries
@@ -211,6 +216,54 @@ async def ask_question(question: Question, background_tasks: BackgroundTasks):
         summaries=[],
         timestamp=datetime.datetime.now().isoformat()
     )
+
+@api_router.get("/status")
+async def check_status(query: str):
+    """
+    Check the status of a question processing
+    """
+    try:
+        # Check MongoDB for cached response
+        cached_response = await app.db.cached_responses.find_one({"query": query})
+        if cached_response:
+            cached_response.pop("_id", None)
+            return {
+                "status": "completed",
+                "summaries": cached_response["summaries"]
+            }
+        
+        # If not in MongoDB, check SQL cache
+        sql_results = await app.sql_db.get_cached_query(query)
+        if sql_results:
+            summaries = []
+            for paper in sql_results:
+                summary = PaperSummary(
+                    title=paper["title"],
+                    authors=paper["authors"],
+                    publication_date=paper["publication_date"] if paper["publication_date"] else "",
+                    journal=paper["journal"],
+                    abstract=paper["abstract"],
+                    summary=paper["summary"],
+                    url=paper["url"],
+                    source=paper["source"]
+                )
+                summaries.append(summary)
+            
+            return {
+                "status": "completed",
+                "summaries": summaries
+            }
+        
+        # Not completed yet
+        return {
+            "status": "processing"
+        }
+    except Exception as e:
+        logger.error(f"Error checking status: {e}")
+        return {
+            "status": "error",
+            "message": str(e)
+        }
 
 async def process_question(question: Question):
     """
@@ -303,11 +356,9 @@ async def process_question(question: Question):
         if paper_ids:
             await app.sql_db.cache_query(question.query, paper_ids)
     
-    # In a real application, you'd notify the client via WebSockets here
-    
     return response
 
-@app.get("/history", response_model=List[QuestionResponse])
+@api_router.get("/history", response_model=List[QuestionResponse])
 async def get_history(limit: int = 10):
     """
     Get recent question history
@@ -354,7 +405,7 @@ async def get_history(limit: int = 10):
             logger.error(f"Error retrieving history from SQL DB: {e2}")
             return []
 
-@app.get("/papers/recent", response_model=List[PaperSummary])
+@api_router.get("/papers/recent", response_model=List[PaperSummary])
 async def get_recent_papers(limit: int = 10, source: Optional[str] = None):
     """
     Get recently added papers
@@ -379,7 +430,7 @@ async def get_recent_papers(limit: int = 10, source: Optional[str] = None):
         logger.error(f"Error retrieving recent papers: {e}")
         return []
 
-@app.get("/stats")
+@api_router.get("/stats")
 async def get_stats():
     """
     Get database statistics
@@ -391,7 +442,7 @@ async def get_stats():
         logger.error(f"Error retrieving statistics: {e}")
         return {"error": str(e)}
 
-@app.post("/papers/search")
+@api_router.post("/papers/search")
 async def search_papers_api(query: str, limit: int = 10):
     """
     Search for papers
@@ -411,6 +462,24 @@ async def search_papers_api(query: str, limit: int = 10):
         )
         summaries.append(summary)
     return summaries
+
+# Include API router
+app.include_router(api_router)
+
+# Root endpoint
+@app.get("/")
+async def root():
+    return FileResponse("build/index.html")
+
+# For production, serve the React build
+if os.path.exists("build"):
+    app.mount("/static", StaticFiles(directory="build/static"), name="static")
+    
+    @app.get("/{full_path:path}")
+    async def serve_react(full_path: str):
+        if full_path.startswith("api"):
+            raise HTTPException(status_code=404)
+        return FileResponse("build/index.html")
 
 if __name__ == "__main__":
     uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
