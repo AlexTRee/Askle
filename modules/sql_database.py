@@ -3,7 +3,7 @@ import logging
 import sqlalchemy
 from sqlalchemy import (
     create_engine, Column, Integer, String, Float, DateTime,
-    ForeignKey, Text, Table, or_, func
+    ForeignKey, Text, Table, or_, func, and_, desc
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship, scoped_session
@@ -116,17 +116,6 @@ class SQLDatabase:
         logger.info(f"Connected to DB: {connection_string}")
 
     def _session_scope(self):
-        session = self.Session()
-        try:
-            yield session
-            session.commit()
-        except Exception:
-            session.rollback()
-            raise
-        finally:
-            session.close()
-
-    def add_paper(self, paper_data: Dict[str, Any], abstract_vector_id: str, summary_vector_id: str) -> int:
         from contextlib import contextmanager
         @contextmanager
         def session_scope():
@@ -139,8 +128,11 @@ class SQLDatabase:
                 raise
             finally:
                 session.close()
+        return session_scope()
 
-        with session_scope() as session:
+    async def add_paper(self, paper_data: Dict[str, Any], abstract_vector_id: str, summary_vector_id: str) -> int:
+        """Add a paper to the database or update if it already exists"""
+        with self._session_scope() as session:
             # Check existing
             paper = session.query(Paper).filter_by(url=paper_data["url"]).first()
             now = datetime.datetime.utcnow()
@@ -193,7 +185,233 @@ class SQLDatabase:
                 new_paper.authors.append(author)
             return new_paper.id
 
-    # Other methods (update, get, search) should similarly use context-managed sessions,
-    # parameterize queries to avoid SQL injection, and handle None cases gracefully.
+    async def get_cached_query(self, query_text: str) -> List[Dict[str, Any]]:
+        """Get cached results for a query if it exists and is not expired"""
+        with self._session_scope() as session:
+            now = datetime.datetime.utcnow()
+            query = session.query(Query).filter(
+                and_(
+                    Query.query_text == query_text,
+                    Query.expires_at > now
+                )
+            ).first()
+            
+            if not query:
+                return []
+            
+            # Query exists and is not expired
+            results = []
+            for qr in sorted(query.results, key=lambda x: x.rank):
+                paper = qr.paper
+                if not paper:
+                    continue
+                    
+                # Format the paper data
+                paper_dict = {
+                    "id": paper.id,
+                    "title": paper.title,
+                    "abstract": paper.abstract,
+                    "summary": paper.summary,
+                    "url": paper.url,
+                    "publication_date": paper.publication_date.isoformat() if paper.publication_date else None,
+                    "source": paper.source.name if paper.source else "Unknown",
+                    "journal": paper.journal.name if paper.journal else "Unknown",
+                    "authors": [author.name for author in paper.authors]
+                }
+                results.append(paper_dict)
+                
+            return results
 
-# End of revised module
+    async def get_paper_by_url(self, url: str) -> Optional[Dict[str, Any]]:
+        """Get a paper by its URL"""
+        with self._session_scope() as session:
+            paper = session.query(Paper).filter_by(url=url).first()
+            if not paper:
+                return None
+                
+            return {
+                "id": paper.id,
+                "title": paper.title,
+                "abstract": paper.abstract,
+                "summary": paper.summary,
+                "url": paper.url,
+                "publication_date": paper.publication_date.isoformat() if paper.publication_date else None,
+                "source": paper.source.name if paper.source else "Unknown",
+                "journal": paper.journal.name if paper.journal else "Unknown",
+                "authors": [author.name for author in paper.authors]
+            }
+
+    async def cache_query(self, query_text: str, paper_ids: List[int], expires_days: int = 7):
+        """Cache a query result with a list of paper IDs"""
+        with self._session_scope() as session:
+            # Delete existing query if exists
+            existing_query = session.query(Query).filter_by(query_text=query_text).first()
+            if existing_query:
+                session.delete(existing_query)
+                session.flush()
+            
+            # Create new query
+            now = datetime.datetime.utcnow()
+            expires_at = now + datetime.timedelta(days=expires_days)
+            new_query = Query(
+                query_text=query_text,
+                created_at=now,
+                expires_at=expires_at
+            )
+            session.add(new_query)
+            session.flush()
+            
+            # Add results
+            for rank, paper_id in enumerate(paper_ids):
+                result = QueryResult(
+                    query_id=new_query.id,
+                    paper_id=paper_id,
+                    rank=rank
+                )
+                session.add(result)
+                
+            return new_query.id
+
+    async def get_recent_queries(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Get recent queries with their creation timestamps"""
+        with self._session_scope() as session:
+            queries = session.query(Query)\
+                .order_by(desc(Query.created_at))\
+                .limit(limit)\
+                .all()
+                
+            results = []
+            for query in queries:
+                results.append({
+                    "id": query.id,
+                    "query_text": query.query_text,
+                    "created_at": query.created_at.isoformat()
+                })
+                
+            return results
+
+    async def get_recent_papers(self, limit: int = 10, source: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get recently added papers, optionally filtered by source"""
+        with self._session_scope() as session:
+            query = session.query(Paper)\
+                .join(Source, Paper.source_id == Source.id, isouter=True)\
+                .order_by(desc(Paper.created_at))
+                
+            if source:
+                query = query.filter(Source.name == source)
+                
+            papers = query.limit(limit).all()
+            
+            results = []
+            for paper in papers:
+                results.append({
+                    "id": paper.id,
+                    "title": paper.title,
+                    "abstract": paper.abstract,
+                    "summary": paper.summary,
+                    "url": paper.url,
+                    "publication_date": paper.publication_date.isoformat() if paper.publication_date else None,
+                    "source": paper.source.name if paper.source else "Unknown",
+                    "journal": paper.journal.name if paper.journal else "Unknown",
+                    "authors": [author.name for author in paper.authors]
+                })
+                
+            return results
+
+    async def get_statistics(self) -> Dict[str, Any]:
+        """Get database statistics"""
+        with self._session_scope() as session:
+            paper_count = session.query(func.count(Paper.id)).scalar()
+            author_count = session.query(func.count(Author.id)).scalar()
+            journal_count = session.query(func.count(Journal.id)).scalar()
+            query_count = session.query(func.count(Query.id)).scalar()
+            
+            # Source distribution
+            source_counts = {}
+            sources = session.query(Source.name, func.count(Paper.id))\
+                .join(Paper, Source.id == Paper.source_id)\
+                .group_by(Source.name)\
+                .all()
+                
+            for source_name, count in sources:
+                source_counts[source_name] = count
+                
+            # Recent activity
+            now = datetime.datetime.utcnow()
+            week_ago = now - datetime.timedelta(days=7)
+            month_ago = now - datetime.timedelta(days=30)
+            
+            papers_last_week = session.query(func.count(Paper.id))\
+                .filter(Paper.created_at >= week_ago)\
+                .scalar()
+                
+            papers_last_month = session.query(func.count(Paper.id))\
+                .filter(Paper.created_at >= month_ago)\
+                .scalar()
+                
+            return {
+                "total_papers": paper_count,
+                "total_authors": author_count,
+                "total_journals": journal_count,
+                "total_queries": query_count,
+                "source_distribution": source_counts,
+                "papers_last_week": papers_last_week,
+                "papers_last_month": papers_last_month,
+                "updated_at": now.isoformat()
+            }
+
+    async def get_papers_by_vector_ids(self, vector_ids: List[str]) -> List[Dict[str, Any]]:
+        """Get papers by their abstract_vector_id or summary_vector_id"""
+        with self._session_scope() as session:
+            papers = session.query(Paper).filter(
+                or_(
+                    Paper.abstract_vector_id.in_(vector_ids),
+                    Paper.summary_vector_id.in_(vector_ids)
+                )
+            ).all()
+            
+            results = []
+            for paper in papers:
+                results.append({
+                    "id": paper.id,
+                    "title": paper.title,
+                    "abstract": paper.abstract,
+                    "summary": paper.summary,
+                    "url": paper.url,
+                    "publication_date": paper.publication_date.isoformat() if paper.publication_date else None,
+                    "source": paper.source.name if paper.source else "Unknown",
+                    "journal": paper.journal.name if paper.journal else "Unknown",
+                    "authors": [author.name for author in paper.authors]
+                })
+                
+            return results
+
+    async def search_papers(self, query_text: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """Search papers by text match on title, abstract, and summary"""
+        with self._session_scope() as session:
+            # Create search pattern for SQL LIKE
+            search_pattern = f"%{query_text}%"
+            
+            papers = session.query(Paper).filter(
+                or_(
+                    Paper.title.ilike(search_pattern),
+                    Paper.abstract.ilike(search_pattern),
+                    Paper.summary.ilike(search_pattern)
+                )
+            ).order_by(desc(Paper.publication_date)).limit(limit).all()
+            
+            results = []
+            for paper in papers:
+                results.append({
+                    "id": paper.id,
+                    "title": paper.title,
+                    "abstract": paper.abstract,
+                    "summary": paper.summary,
+                    "url": paper.url,
+                    "publication_date": paper.publication_date.isoformat() if paper.publication_date else None,
+                    "source": paper.source.name if paper.source else "Unknown",
+                    "journal": paper.journal.name if paper.journal else "Unknown",
+                    "authors": [author.name for author in paper.authors]
+                })
+                
+            return results
