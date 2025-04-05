@@ -1,0 +1,283 @@
+/* App.css - Styling for Lung Cancer Research Assistant */
+
+:root {
+    --primary-color: #3a6ea5;
+    --secondary-color: #fc6d3f;
+    --light-bg: #f5f7fa;
+    --dark-text: #333;
+    --light-text: #fafafa;
+    --border-color: #e0e0e0;
+    --card-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    --success-color: #4caf50;
+    --warning-color: #ff9800;
+    --error-color: #f44336;
+  }
+  
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+  
+  body {
+    font-family: 'Roboto', 'Segoe UI', Arial, sans-serif;
+    line-height: 1.6;
+    background-color: var(--light-bg);
+    color: var(--dark-text);
+  }
+  
+  .app-container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 20px;
+  }
+  
+  /* Header styles */
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px 0;
+    border-bottom: 1px solid var(--border-color);
+    margin-bottom: 30px;
+  }
+  
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  
+  .logo img {
+    height: 40px;
+  }
+  
+  .logo h1 {
+    color: var(--primary-color);
+    font-size: 24px;
+    font-weight: 600;
+  }
+  
+  /* Search section */
+  .search-section {
+    background-color: white;
+    border-radius: 8px;
+    padding: 30px;
+    box-shadow: var(--card-shadow);
+    margin-bottom: 30px;
+  }
+  
+  .search-form {
+    display: flex;
+    gap: 10px;
+  }
+  
+  .search-input {
+    flex: 1;
+    padding: 12px 15px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    font-size: 16px;
+  }
+  
+  .search-button {
+    background-color: var(--primary-color);
+    color: var(--light-text);
+    border: none;
+    border-radius: 4px;
+    padding: 0 20px;
+    font-size: 16px;
+    cursor: pointer;
+    transition: background-color 0.3s;
+  }
+  
+  .search-button:hover {
+    background-color: #2a5082;
+  }
+  
+  .max-results {
+    margin-top: 15px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  
+  .max-results label {
+    font-size: 14px;
+  }
+  
+  .max-results select {
+    padding: 5px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+  }
+  
+  /* Results section */
+  .results-section {
+    margin-bottom: 40px;
+  }
+  
+  .loading {
+    text-align: center;
+    padding: 40px 0;
+    color: var(--primary-color);
+  }
+  
+  .spinner {
+    border: 4px solid rgba(0, 0, 0, 0.1);
+    border-radius: 50%;
+    border-top: 4px solid var(--primary-color);
+    width: 40px;
+    height: 40px;
+    animation: spin 1s linear infinite;
+    margin: 20px auto;
+  }
+  
+  @keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+  }
+  
+  /* Paper cards */
+  .papers-container {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+    gap: 20px;
+  }
+  
+  .paper-card {
+    background-color: white;
+    border-radius: 8px;
+    box-shadow: var(--card-shadow);
+    overflow: hidden;
+    transition: transform 0.3s, box-shadow 0.3s;
+  }
+  
+  .paper-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 10px 20px rgba(0, 0, 0, 0.15);
+  }
+  
+  .paper-header {
+    padding: 15px 20px;
+    background-color: var(--primary-color);
+    color: var(--light-text);
+  }
+  
+  .paper-title {
+    font-size: 18px;
+    font-weight: 600;
+    margin-bottom: 5px;
+  }
+  
+  .paper-meta {
+    font-size: 12px;
+    display: flex;
+    justify-content: space-between;
+  }
+  
+  .paper-source {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 12px;
+    background-color: rgba(255, 255, 255, 0.2);
+  }
+  
+  .paper-content {
+    padding: 20px;
+  }
+  
+  .paper-summary {
+    margin-bottom: 15px;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  
+  .paper-abstract {
+    margin-bottom: 15px;
+    font-size: 13px;
+    color: #666;
+    border-left: 3px solid var(--primary-color);
+    padding-left: 15px;
+    font-style: italic;
+  }
+  
+  .paper-link {
+    display: inline-block;
+    color: var(--secondary-color);
+    text-decoration: none;
+    font-weight: 600;
+    font-size: 14px;
+  }
+  
+  .paper-link:hover {
+    text-decoration: underline;
+  }
+  
+  /* History section */
+  .history-section {
+    background-color: white;
+    border-radius: 8px;
+    padding: 20px;
+    box-shadow: var(--card-shadow);
+  }
+  
+  .history-title {
+    font-size: 20px;
+    margin-bottom: 15px;
+    color: var(--primary-color);
+  }
+  
+  .history-list {
+    list-style: none;
+  }
+  
+  .history-item {
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border-color);
+    cursor: pointer;
+    transition: background-color 0.2s;
+  }
+  
+  .history-item:hover {
+    background-color: #f0f4f8;
+  }
+  
+  .history-item:last-child {
+    border-bottom: none;
+  }
+  
+  .history-query {
+    font-weight: 500;
+  }
+  
+  .history-timestamp {
+    font-size: 12px;
+    color: #666;
+  }
+  
+  /* Footer */
+  .footer {
+    text-align: center;
+    padding: 20px 0;
+    margin-top: 40px;
+    border-top: 1px solid var(--border-color);
+    color: #666;
+    font-size: 14px;
+  }
+  
+  /* Responsive adjustments */
+  @media (max-width: 768px) {
+    .papers-container {
+      grid-template-columns: 1fr;
+    }
+  
+    .search-form {
+      flex-direction: column;
+    }
+  
+    .search-button {
+      width: 100%;
+      padding: 12px;
+    }
+  }
