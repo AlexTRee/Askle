@@ -2,12 +2,41 @@
 version: '3.8'
 
 services:
-  mongodb:
-    image: mongo:latest
-    container_name: research-assistant-mongodb
-    restart: always
-    volumes:
-      - mongo_data:/data/db
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: askle-backend
     ports:
-      - "27017:27017"
-    networks:
+      - "8000:8000"
+    volumes:
+      - ./:/app                       # Mount code for live reload if desired
+      - ./data:/app/data             # Persist SQLite DB and FAISS files
+    environment:
+      # SQLite DB path inside container
+      - SQL_DB_PATH=/app/data/papers.db
+      # Vector DB paths
+      - VECTOR_INDEX_PATH=/app/data/vector_index
+      - VECTOR_METADATA_PATH=/app/data/vector_metadata
+      # Sentence‑Transformer cache (optional)
+      - TRANSFORMERS_CACHE=/app/data/transformers_cache
+    command: >
+      sh -c "uvicorn app:app 
+             --host 0.0.0.0 
+             --port 8000 
+             --reload"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: askle-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
+volumes:
+  data:
+
+
