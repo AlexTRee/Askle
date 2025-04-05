@@ -14,6 +14,11 @@
     # Copy code
     COPY . .
     
+    # Ensure data folders exist
+RUN mkdir -p /app/data/models/deepseek-r1-distill-qwen-1.5b
+
+ENV DEEPSEEK_MODEL_PATH=/app/data/models/deepseek-r1-distill-qwen-1.5b
+
     # Expose FastAPI port
     EXPOSE 8000
     

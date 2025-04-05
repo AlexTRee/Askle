@@ -20,7 +20,7 @@ services:
       - VECTOR_METADATA_PATH=/app/data/vector_metadata
       # Sentence‑Transformer cache (optional)
       - TRANSFORMERS_CACHE=/app/data/transformers_cache
-      - DEEPSEEK_MODEL_PATH=/app/data/deepseek_model
+      - DEEPSEEK_MODEL_PATH=/app/data/models/deepseek-r1-distill-qwen-1.5b
     command: >
       sh -c "uvicorn app:app 
              --host 0.0.0.0 
