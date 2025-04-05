@@ -7,7 +7,6 @@ from typing import List, Optional
 import asyncio
 import logging
 import datetime
-from motor.motor_asyncio import AsyncIOMotorClient
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
@@ -27,7 +26,6 @@ app = FastAPI(title="Lung Cancer Research Assistant")
 api_router = APIRouter(prefix="/api")
 
 # Environment variables (should be in .env file)
-MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
 SQL_DB_PATH = os.getenv("SQL_DB_PATH", "./data/papers.db")
 VECTOR_INDEX_PATH = os.getenv("VECTOR_INDEX_PATH", "./data/vector_index")
 VECTOR_METADATA_PATH = os.getenv("VECTOR_METADATA_PATH", "./data/vector_metadata")
@@ -35,10 +33,6 @@ VECTOR_METADATA_PATH = os.getenv("VECTOR_METADATA_PATH", "./data/vector_metadata
 # Database connection
 @app.on_event("startup")
 async def startup_db_client():
-    app.mongodb_client = AsyncIOMotorClient(MONGODB_URI)
-    app.db = app.mongodb_client.research_assistant
-    logger.info("Connected to the MongoDB database!")
-
     # SQL Database connection
     app.sql_db = SQLDatabase(f"sqlite:///{SQL_DB_PATH}")
     logger.info("Connected to the SQL database!")
@@ -52,8 +46,10 @@ async def startup_db_client():
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
-    app.mongodb_client.close()
-    logger.info("MongoDB connection closed")
+    # Close vector database to ensure final save
+    if hasattr(app, 'vector_db'):
+        app.vector_db.close()
+    logger.info("Database connections closed")
 
 # Initialize retrievers and AI processor
 pubmed_retriever = PubMedRetriever()
@@ -173,7 +169,7 @@ async def ask_question(question: Question, background_tasks: BackgroundTasks):
     """
     logger.info(f"Received question: {question.query}")
     
-    # First check SQL database cache
+    # Check SQL database cache
     cached_results = await app.sql_db.get_cached_query(question.query)
     if cached_results:
         logger.info("Returning cached SQL response")
@@ -197,16 +193,6 @@ async def ask_question(question: Question, background_tasks: BackgroundTasks):
             timestamp=datetime.datetime.now().isoformat()
         )
     
-    # Then check MongoDB cache (original functionality)
-    try:
-        cached_response = await app.db.cached_responses.find_one({"query": question.query})
-        if cached_response:
-            logger.info("Returning cached MongoDB response")
-            cached_response.pop("_id", None)  # Remove MongoDB ID
-            return QuestionResponse(**cached_response)
-    except Exception as e:
-        logger.error(f"Error checking MongoDB cache: {e}")
-    
     # Start processing in the background if not cached
     background_tasks.add_task(process_question, question)
     
@@ -223,16 +209,7 @@ async def check_status(query: str):
     Check the status of a question processing
     """
     try:
-        # Check MongoDB for cached response
-        cached_response = await app.db.cached_responses.find_one({"query": query})
-        if cached_response:
-            cached_response.pop("_id", None)
-            return {
-                "status": "completed",
-                "summaries": cached_response["summaries"]
-            }
-        
-        # If not in MongoDB, check SQL cache
+        # Check SQL cache
         sql_results = await app.sql_db.get_cached_query(query)
         if sql_results:
             summaries = []
@@ -325,12 +302,6 @@ async def process_question(question: Question):
                 source=paper["source"]
             )
             summaries.append(summary)
-            
-            # Store in MongoDB incrementally (original functionality)
-            try:
-                await app.db.paper_summaries.insert_one(summary.dict())
-            except Exception as e:
-                logger.error(f"Error storing in MongoDB: {e}")
     
     # Create final response
     response = QuestionResponse(
@@ -338,12 +309,6 @@ async def process_question(question: Question):
         summaries=summaries,
         timestamp=datetime.datetime.now().isoformat()
     )
-    
-    # Cache the response in MongoDB (original functionality)
-    try:
-        await app.db.cached_responses.insert_one(response.dict())
-    except Exception as e:
-        logger.error(f"Error caching in MongoDB: {e}")
     
     # Cache paper IDs in SQL database
     if summaries:
@@ -364,46 +329,35 @@ async def get_history(limit: int = 10):
     Get recent question history
     """
     try:
-        # Get from MongoDB (original functionality)
-        cursor = app.db.cached_responses.find().sort("timestamp", -1).limit(limit)
+        # Get from SQL database
+        recent_queries = await app.sql_db.get_recent_queries(limit)
         history = []
-        async for doc in cursor:
-            doc.pop("_id", None)  # Remove MongoDB ID
-            history.append(QuestionResponse(**doc))
+        for query_item in recent_queries:
+            papers = await app.sql_db.get_cached_query(query_item["query_text"])
+            if papers:
+                summaries = []
+                for paper in papers:
+                    summary = PaperSummary(
+                        title=paper["title"],
+                        authors=paper["authors"],
+                        publication_date=paper["publication_date"] if paper["publication_date"] else "",
+                        journal=paper["journal"],
+                        abstract=paper["abstract"],
+                        summary=paper["summary"],
+                        url=paper["url"],
+                        source=paper["source"]
+                    )
+                    summaries.append(summary)
+                
+                history.append(QuestionResponse(
+                    query=query_item["query_text"],
+                    summaries=summaries,
+                    timestamp=query_item["created_at"]
+                ))
         return history
     except Exception as e:
-        logger.error(f"Error retrieving history from MongoDB: {e}")
-        
-        # Fallback to SQL database
-        try:
-            recent_queries = await app.sql_db.get_recent_queries(limit)
-            history = []
-            for query_item in recent_queries:
-                papers = await app.sql_db.get_cached_query(query_item["query_text"])
-                if papers:
-                    summaries = []
-                    for paper in papers:
-                        summary = PaperSummary(
-                            title=paper["title"],
-                            authors=paper["authors"],
-                            publication_date=paper["publication_date"] if paper["publication_date"] else "",
-                            journal=paper["journal"],
-                            abstract=paper["abstract"],
-                            summary=paper["summary"],
-                            url=paper["url"],
-                            source=paper["source"]
-                        )
-                        summaries.append(summary)
-                    
-                    history.append(QuestionResponse(
-                        query=query_item["query_text"],
-                        summaries=summaries,
-                        timestamp=query_item["created_at"]
-                    ))
-            return history
-        except Exception as e2:
-            logger.error(f"Error retrieving history from SQL DB: {e2}")
-            return []
+        logger.error(f"Error retrieving history: {e}")
+        return []
 
 @api_router.get("/papers/recent", response_model=List[PaperSummary])
 async def get_recent_papers(limit: int = 10, source: Optional[str] = None):
@@ -436,8 +390,12 @@ async def get_stats():
     Get database statistics
     """
     try:
-        stats = await app.sql_db.get_statistics()
-        return stats
+        sql_stats = await app.sql_db.get_statistics()
+        vector_stats = app.vector_db.get_stats()
+        return {
+            "sql_database": sql_stats,
+            "vector_database": vector_stats
+        }
     except Exception as e:
         logger.error(f"Error retrieving statistics: {e}")
         return {"error": str(e)}
