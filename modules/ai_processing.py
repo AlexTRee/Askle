@@ -15,7 +15,7 @@ class DeepSeekProcessor:
     def __init__(self, model_path=None, device=None, max_token_limit=4096):
         # Default to environment variable or standard path if not provided
         if model_path is None:
-            model_path = os.environ.get("DEEPSEEK_MODEL_PATH", "deepseek-ai/deepseek-llm-1.5b-chat")
+            model_path = os.environ.get("DEEPSEEK_MODEL_PATH", "/deepseek-r1-distill-qwen-1.5b")
         
         self.max_token_limit = max_token_limit
         logger.info(f"Loading DeepSeek model from {model_path}")
