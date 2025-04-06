@@ -258,10 +258,12 @@ class GoogleScholarRetriever:
             logger.error(f"Error in Google Scholar search thread: {e}")
             return []
     
-    @backoff.on_exception(backoff.expo, 
-                         (scholarly.scholarly.SearchError, Exception),
-                         max_tries=3,
-                         giveup=lambda e: isinstance(e, scholarly.scholarly.MaxTriesExceededException))
+    @backoff.on_exception(
+    backoff.expo,
+    Exception,  # Use a more general exception handler
+    max_tries=3,
+    giveup=lambda e: isinstance(e, scholarly.scholarly.MaxTriesExceededException))
+
     def _scholarly_search(self, query: str, max_results: int) -> List[PaperInfo]:
         """
         Execute scholarly search in a thread pool
