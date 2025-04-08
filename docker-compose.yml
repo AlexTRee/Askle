@@ -10,7 +10,6 @@ services:
     volumes:
       - ./:/app                       # Mount code for live reload if desired
       - ./data:/app/data             # Persist SQLite DB and FAISS files
-      - ./models:/app/models         # Mount models directory if not included in Dockerfile
     environment:
       # SQLite DB path inside container
       - SQL_DB_PATH=/app/data/papers.db
