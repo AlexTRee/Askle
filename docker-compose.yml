@@ -19,7 +19,7 @@ services:
       - "8000:8000"
     volumes:
       - ./:/app                       # Mount code for live reload if desired
-      - ./data:/app/data             # Persist SQLite DB and FAISS files
+      - ./data:/app/backend/data             # Persist SQLite DB and FAISS files
     environment:
       # SQLite DB path inside container
       - SQL_DB_PATH=/app/data/papers.db
@@ -35,8 +35,5 @@ services:
       - DEEPSEEK_MODEL_PATH=/app/data/hub/models--deepseek-ai--deepseek-r1-distill-qwen-1.5b
     command: >
       sh -c "uvicorn app:app --host 0.0.0.0 --port 8000 --reload"
-
-volumes:
-  data:
 
 
