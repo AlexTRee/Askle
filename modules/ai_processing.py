@@ -44,7 +44,7 @@ class DeepSeekProcessor:
         # Default to environment variable or standard path if not provided
         if model_path is None:
             # Adjust the default path based on where this script is relative to the data folder
-            default_model_dir = os.path.join(os.path.dirname(__file__), '..', 'data', 'models', 'deepseek-r1-distill-qwen-1.5b')
+            default_model_dir = os.path.join(os.path.dirname(__file__), '..', 'data', 'hub', 'models--deepseek-ai--deepseek-r1-distill-qwen-1.5b')
             model_path = os.environ.get("DEEPSEEK_MODEL_PATH", default_model_dir)
 
         if not os.path.isdir(model_path):
