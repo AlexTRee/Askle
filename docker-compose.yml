@@ -1,9 +1,19 @@
 # docker-compose.yml
 services:
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile.frontend
+    container_name: askle-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
   backend:
     build:
       context: .
-      dockerfile: Dockerfile.backend
+      dockerfile: backend/Dockerfile.backend
     container_name: askle-backend
     ports:
       - "8000:8000"
@@ -25,16 +35,6 @@ services:
       - DEEPSEEK_MODEL_PATH=/app/data/hub/models--deepseek-ai--deepseek-r1-distill-qwen-1.5b
     command: >
       sh -c "uvicorn app:app --host 0.0.0.0 --port 8000 --reload"
-
-  frontend:
-    build:
-      context: .
-      dockerfile: Dockerfile.frontend
-    container_name: askle-frontend
-    ports:
-      - "3000:80"
-    depends_on:
-      - backend
 
 volumes:
   data:
