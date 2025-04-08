@@ -1,21 +1,24 @@
-# --- Backend Dockerfile ---
+# backend/Dockerfile.backend
 FROM python:3.10-slim
 
 # Install system deps for FAISS
 RUN apt-get update && apt-get install -y build-essential git \
     && rm -rf /var/lib/apt/lists/*
     
-WORKDIR /app/backend
+WORKDIR /app
     
 # Copy Python requirements & install
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-    
-# Copy code
-COPY . .
 
-# Copy frontend build, just to make sure
-COPY frontend/build /app/build
+# Copy backend code
+COPY backend/ ./backend/
+
+# Create a build directory for frontend files
+RUN mkdir -p build
+
+# Copy frontend build if it exists (will be overridden by volume in dev)
+COPY frontend/build ./build/
 
 # Ensure data folders exist
 RUN mkdir -p /app/backend/data/hub/models--deepseek-ai--deepseek-r1-distill-qwen-1.5b
@@ -29,5 +32,5 @@ ENV DEEPSEEK_MODEL_PATH=/app/backend/data/hub/models--deepseek-ai--deepseek-r1-d
 EXPOSE 8000
     
 # Run with reload in dev; remove --reload for prod
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "backend.app:app", "--host", "0.0.0.0", "--port", "8000"]
     

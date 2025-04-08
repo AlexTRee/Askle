@@ -1,38 +1,45 @@
 # docker-compose.yml
-services:
-  frontend:
-    build:
-      context: .
-      dockerfile: frontend/Dockerfile.frontend
-    container_name: askle-frontend
-    ports:
-      - "3000:80"
-    depends_on:
-      - backend
+# Build frontend first
+frontend-build:
+  build:
+    context: .
+    dockerfile: frontend/Dockerfile.frontend
+  image: askle-frontend-build
+# This service only exists to build the frontend files
 
-  backend:
-    build:
-      context: .
-      dockerfile: backend/Dockerfile.backend
-    container_name: askle-backend
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./data:/app/data             # Persist SQLite DB and FAISS files
-    environment:
-      # SQLite DB path inside container
-      - SQL_DB_PATH=/app/data/papers.db
+# Backend depends on frontend build
+backend:
+  build:
+    context: .
+    dockerfile: backend/Dockerfile.backend
+  container_name: askle-backend
+  ports:
+    - "8000:8000"
+  volumes:
+    - ./data:/app/data      # Persist SQLite DB and FAISS files
+  environment:
+    # SQLite DB path inside container
+    - SQL_DB_PATH=/app/data/papers.db
 
-      # Vector DB paths (including file extensions as used in vector_database.py)
-      - VECTOR_INDEX_PATH=/app/data/vector_index.faiss
-      - VECTOR_METADATA_PATH=/app/data/vector_metadata.pkl
+    # Vector DB paths (including file extensions as used in vector_database.py)
+    - VECTOR_INDEX_PATH=/app/data/vector_index.faiss
+    - VECTOR_METADATA_PATH=/app/data/vector_metadata.pkl
 
-      # Sentence‑Transformer cache (optional)
-      - HF_HOME=/app/data/
+    # Sentence‑Transformer cache (optional)
+    - HF_HOME=/app/data/
 
-      # DeepSeek model path
-      - DEEPSEEK_MODEL_PATH=/app/data/hub/models--deepseek-ai--deepseek-r1-distill-qwen-1.5b
-    command: >
-      sh -c "uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload"
+    # DeepSeek model path
+    - DEEPSEEK_MODEL_PATH=/app/backend/data/hub/models--deepseek-ai--deepseek-r1-distill-qwen-1.5b
+  command: >
+    sh -c "uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload"
+  depends_on:
+    - frontend-build
 
-
+# Frontend service that uses the build files
+frontend:
+  image: askle-frontend-build       # Reuse the same image built in frontend-build
+  container_name: askle-frontend
+  ports:
+    - "3000:80"
+  depends_on:
+    - backend
