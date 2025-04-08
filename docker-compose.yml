@@ -20,10 +20,10 @@ services:
       - VECTOR_METADATA_PATH=/app/data/vector_metadata.pkl
 
       # Sentence‑Transformer cache (optional)
-      - TRANSFORMERS_CACHE=/app/data/transformers_cache
-      
+      - HF_HOME=/app/data/
+
       # DeepSeek model path
-      - DEEPSEEK_MODEL_PATH=/app/data/models/deepseek-r1-distill-qwen-1.5b
+      - DEEPSEEK_MODEL_PATH=/app/data/hub/models--deepseek-ai--deepseek-r1-distill-qwen-1.5b
     command: >
       sh -c "uvicorn app:app --host 0.0.0.0 --port 8000 --reload"
 
