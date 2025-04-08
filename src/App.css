@@ -139,6 +139,25 @@
   }
   
   /* Paper cards */
+
+  .references-list, .papers-list {
+    font-size: 0.9rem;
+  }
+  
+  .paper-item {
+    padding-bottom: 15px;
+    border-bottom: 1px solid #eee;
+    margin-bottom: 15px;
+  }
+  
+  .paper-item:last-child {
+    border-bottom: none;
+  }
+  
+  .reference-item {
+    margin-bottom: 10px;
+  }
+  
   .papers-container {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
