@@ -1,5 +1,6 @@
-backend/data/
-backend/build/
+.vscode/
 .DS_Store
 __pycache__/
+backend/data/
+backend/build/
 backend/modules/__pycache__/
