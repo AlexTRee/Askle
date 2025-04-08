@@ -4,11 +4,10 @@ asyncio
 backoff
 bs4
 faiss-cpu
-faiss-gpu
 fastapi
 huggingface-hub
 motor
-numpy
+numpy==1.26.4
 pydantic
 react
 requests
