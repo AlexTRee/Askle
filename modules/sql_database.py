@@ -12,7 +12,7 @@ from typing import List, Dict, Any, Optional
 import datetime
 from dateutil.parser import parse as parse_datetime # Use dateutil for robust parsing
 import os
-# import uuid # For potential default vector IDs if needed
+import uuid # For potential default vector IDs if needed
 
 # Configure logging (ideally configured at application entry point)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
