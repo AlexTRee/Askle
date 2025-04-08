@@ -1,8 +1,10 @@
+accelerate
 aiohttp
 asyncio
 backoff
 bs4
 faiss-cpu
+faiss-gpu
 fastapi
 huggingface-hub
 motor
