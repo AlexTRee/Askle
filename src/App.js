@@ -1,232 +1,177 @@
 // src/App.js
 import React, { useState, useEffect } from 'react';
-import { Container, Box, Typography, TextField, Button, CircularProgress, Card, CardContent, Divider, Link } from '@mui/material';
-import SearchIcon from '@mui/icons-material/Search';
-import ArticleIcon from '@mui/icons-material/Article';
-import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import './App.css';
 
 function App() {
-  const [query, setQuery] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-  const [results, setResults] = useState([]);
-  const [error, setError] = useState('');
-  const [recentQueries, setRecentQueries] = useState([]);
-  
-  // Fetch recent queries on load
+  const [question, setQuestion] = useState('');
+  const [answer, setAnswer] = useState('');
+  const [references, setReferences] = useState([]);
+  const [recentPapers, setRecentPapers] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [papersLoading, setPapersLoading] = useState(true);
+
   useEffect(() => {
-    fetchRecentQueries();
+    // Fetch recent papers when component mounts
+    fetchRecentPapers();
   }, []);
-  
-  const fetchRecentQueries = async () => {
+
+  const fetchRecentPapers = async () => {
     try {
-      const response = await fetch('/api/history');
-      if (response.ok) {
-        const data = await response.json();
-        setRecentQueries(data);
-      }
-    } catch (err) {
-      console.error("Failed to fetch recent queries:", err);
+      const response = await fetch('http://localhost:8000/api/papers/recent');
+      const data = await response.json();
+      setRecentPapers(data);
+      setPapersLoading(false);
+    } catch (error) {
+      console.error('Error fetching recent papers:', error);
+      setPapersLoading(false);
     }
   };
-  
-  const handleSearch = async (e) => {
-    e.preventDefault();
-    
-    if (!query.trim()) {
-      setError('Please enter a search query.');
-      return;
-    }
-    
-    setIsLoading(true);
-    setError('');
-    setResults([]);
-    
+
+  const handleAskQuestion = async () => {
+    if (!question.trim()) return;
+
+    setLoading(true);
+    setAnswer('');
+    setReferences([]);
+
     try {
-      const response = await fetch('/api/ask', {
+      const response = await fetch('http://localhost:8000/api/ask', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          query: query,
-          max_results: 10
-        }),
+        body: JSON.stringify({ query: question }),
       });
-      
-      if (!response.ok) {
-        throw new Error('Failed to fetch results');
-      }
-      
-      // Start polling for results
-      const initialData = await response.json();
-      
-      if (initialData.summaries.length > 0) {
-        // Results are already available
-        setResults(initialData.summaries);
-        setIsLoading(false);
-      } else {
-        // Poll for results
-        pollForResults(query);
-      }
-      
-    } catch (err) {
-      setError('An error occurred while searching. Please try again.');
-      setIsLoading(false);
-      console.error('Search error:', err);
+
+      const data = await response.json();
+
+      // The /api/ask endpoint now returns a status and message.
+      // You will need to call /api/status with the query to get the answer and references.
+      console.log("/api/ask response:", data);
+      setAnswer(data.message || 'Request submitted for processing.'); // Update UI based on the response
+      // You should now implement a mechanism to call /api/status to get the actual answer and references.
+      // For example, you could set an interval to poll the status endpoint.
+      // For this immediate fix, we will not try to set answer and references from /api/ask directly.
+
+    } catch (error) {
+      console.error('Error asking question:', error);
+      setAnswer('Sorry, there was an error submitting your question. Please try again.');
+    } finally {
+      setLoading(false);
     }
   };
-  
-  const pollForResults = async (searchQuery) => {
-    try {
-      // In a real application, you would use WebSockets instead of polling
-      const interval = setInterval(async () => {
-        const response = await fetch(`/api/status?query=${encodeURIComponent(searchQuery)}`);
-        if (response.ok) {
-          const data = await response.json();
-          
-          if (data.status === 'completed') {
-            setResults(data.summaries);
-            setIsLoading(false);
-            clearInterval(interval);
-            
-            // Update recent queries
-            fetchRecentQueries();
-          }
-        }
-      }, 2000);
-      
-      // Set a timeout to stop polling after 30 seconds
-      setTimeout(() => {
-        clearInterval(interval);
-        if (isLoading) {
-          setIsLoading(false);
-          setError('Request timed out. Please try again.');
-        }
-      }, 30000);
-      
-    } catch (err) {
-      setError('An error occurred while retrieving results.');
-      setIsLoading(false);
-    }
-  };
-  
+
   return (
-    <Container maxWidth="lg">
-      <Box sx={{ my: 4, textAlign: 'center' }}>
-        <Typography variant="h3" component="h1" gutterBottom>
-          Lung Cancer Research Assistant
-        </Typography>
-        <Typography variant="subtitle1" color="text.secondary" sx={{ mb: 4 }}>
-          Ask questions about the latest lung cancer research
-        </Typography>
-        
-        <Box component="form" onSubmit={handleSearch} sx={{ mb: 4 }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <TextField
-              fullWidth
-              label="Ask a question about lung cancer research"
-              variant="outlined"
-              value={query}
-              onChange={e => setQuery(e.target.value)}
-              sx={{ maxWidth: 600, mr: 1 }}
-            />
-            <Button 
-              type="submit" 
-              variant="contained" 
-              disabled={isLoading}
-              startIcon={<SearchIcon />}
-            >
-              Search
-            </Button>
-          </Box>
-          {error && (
-            <Typography color="error" sx={{ mt: 2 }}>
-              {error}
-            </Typography>
-          )}
-        </Box>
-        
-        {isLoading ? (
-          <Box sx={{ display: 'flex', justifyContent: 'center', mt: 4 }}>
-            <CircularProgress />
-            <Typography sx={{ ml: 2 }}>
-              Searching for the latest research...
-            </Typography>
-          </Box>
-        ) : (
-          <>
-            {results.length > 0 && (
-              <Box>
-                <Typography variant="h5" component="h2" gutterBottom sx={{ mb: 3 }}>
-                  Research Results
-                </Typography>
-                
-                {results.map((paper, index) => (
-                  <Card key={index} sx={{ mb: 3, textAlign: 'left' }}>
-                    <CardContent>
-                      <Typography variant="h6" component="h3" gutterBottom>
-                        {paper.title}
-                      </Typography>
-                      
-                      <Typography variant="body2" color="text.secondary" gutterBottom>
-                        {paper.authors.join(', ')} - {paper.publication_date} - {paper.journal}
-                      </Typography>
-                      
-                      <Typography variant="body2" color="text.primary" paragraph sx={{ mt: 2 }}>
-                        <strong>Summary:</strong> {paper.summary}
-                      </Typography>
-                      
-                      <Divider sx={{ my: 2 }} />
-                      
-                      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <Typography variant="caption" color="text.secondary">
-                          Source: {paper.source}
-                        </Typography>
-                        
-                        <Link 
-                          href={paper.url} 
-                          target="_blank" 
-                          rel="noopener noreferrer"
-                          sx={{ display: 'flex', alignItems: 'center' }}
-                        >
-                          <ArticleIcon sx={{ mr: 0.5, fontSize: 16 }} />
-                          View Original Paper
-                        </Link>
-                      </Box>
-                    </CardContent>
-                  </Card>
-                ))}
-              </Box>
-            )}
-            
-            {results.length === 0 && !isLoading && (
-              <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', mt: 4 }}>
-                <InfoOutlinedIcon color="primary" sx={{ fontSize: 60, mb: 2 }} />
-                <Typography variant="body1">
-                  Ask a question about lung cancer research to get started.
-                </Typography>
-                
-                {recentQueries.length > 0 && (
-                  <Box sx={{ mt: 4, width: '100%', maxWidth: 600 }}>
-                    <Typography variant="h6" gutterBottom>
-                      Recent Searches
-                    </Typography>
-                    {recentQueries.slice(0, 5).map((item, index) => (
-                      <Card key={index} sx={{ mb: 1, cursor: 'pointer' }} onClick={() => setQuery(item.query)}>
-                        <CardContent sx={{ py: 1 }}>
-                          <Typography variant="body2">{item.query}</Typography>
-                        </CardContent>
-                      </Card>
-                    ))}
-                  </Box>
+    <div className="container my-5">
+      <div className="row">
+        <div className="col-12 text-center mb-4">
+          <h1>Lung Cancer Research Assistant</h1>
+          <p className="lead">Ask questions about the latest lung cancer research</p>
+        </div>
+      </div>
+
+      <div className="row justify-content-center mb-5">
+        <div className="col-md-8">
+          <div className="card">
+            <div className="card-body">
+              <div className="mb-3">
+                <label htmlFor="questionInput" className="form-label">Your Question:</label>
+                <div className="input-group">
+                  <input
+                    type="text"
+                    className="form-control"
+                    id="questionInput"
+                    placeholder="e.g., What are the latest advancements in immunotherapy for lung cancer?"
+                    value={question}
+                    onChange={(e) => setQuestion(e.target.value)}
+                    onKeyPress={(e) => e.key === 'Enter' && handleAskQuestion()}
+                  />
+                  <button
+                    className="btn btn-primary"
+                    onClick={handleAskQuestion}
+                    disabled={loading}
+                  >
+                    {loading ? (
+                      <>
+                        <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+                        Processing...
+                      </>
+                    ) : 'Ask'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {answer && (
+        <div className="row">
+          <div className="col-12">
+            <div className="card mb-4">
+              <div className="card-header bg-primary text-white">
+                <h5 className="card-title mb-0">Answer</h5>
+              </div>
+              <div className="card-body">
+                <div className="mb-3">{answer}</div>
+                {references.length > 0 && (
+                  <>
+                    <hr />
+                    <h6>References:</h6>
+                    <div className="references-list">
+                      {references.map((ref, index) => (
+                        <div key={index} className="reference-item">
+                          <a href={ref.url} target="_blank" rel="noreferrer">{ref.title}</a>
+                          <p><small>{ref.authors.join(', ')} - {ref.journal} ({ref.publication_date})</small></p>
+                        </div>
+                      ))}
+                    </div>
+                  </>
                 )}
-              </Box>
-            )}
-          </>
-        )}
-      </Box>
-    </Container>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="row">
+        <div className="col-12">
+          <div className="card">
+            <div className="card-header bg-secondary text-white">
+              <h5 className="card-title mb-0">Recent Papers</h5>
+            </div>
+            <div className="card-body">
+              <div className="papers-list">
+                {papersLoading ? (
+                  <div className="text-center py-4">
+                    <div className="spinner-border" role="status">
+                      <span className="visually-hidden">Loading...</span>
+                    </div>
+                    <p className="mt-2">Loading recent papers...</p>
+                  </div>
+                ) : (
+                  recentPapers.length > 0 ? (
+                    recentPapers.map((paper, index) => (
+                      <div key={index} className="paper-item mb-3">
+                        <h6>
+                          <a href={paper.url} target="_blank" rel="noreferrer">{paper.title}</a>
+                        </h6>
+                        <p className="mb-1">
+                          <small>{paper.authors.join(', ')} - {paper.journal} ({paper.publication_date})</small>
+                        </p>
+                        <p className="paper-abstract">{paper.abstract.substring(0, 200)}...</p>
+                      </div>
+                    ))
+                  ) : (
+                    <p>No recent papers available.</p>
+                  )
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
