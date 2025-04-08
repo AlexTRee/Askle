@@ -18,12 +18,12 @@ COPY . .
 COPY frontend/build /app/build
 
 # Ensure data folders exist
-RUN mkdir -p /app/frontend/data/hub/models--deepseek-ai--deepseek-r1-distill-qwen-1.5b
+RUN mkdir -p /app/backend/data/hub/models--deepseek-ai--deepseek-r1-distill-qwen-1.5b
 
 # Run the model download script during build
-RUN python /app/frontend/src/get_model.py
+RUN python /app/backend/src/get_model.py
 
-ENV DEEPSEEK_MODEL_PATH=/app/frontend/data/hub/models--deepseek-ai--deepseek-r1-distill-qwen-1.5b
+ENV DEEPSEEK_MODEL_PATH=/app/backend/data/hub/models--deepseek-ai--deepseek-r1-distill-qwen-1.5b
 
 # Expose FastAPI port
 EXPOSE 8000
