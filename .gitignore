@@ -1,4 +1,5 @@
-/data/models/
+/data/
+/build/
 .DS_Store
 __pycache__/
 modules/__pycache__/
