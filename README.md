@@ -33,7 +33,9 @@ Please create on your own branch and pull from `main` periodically to get the la
 ```
 <br>
 <br>
-![framework](https://github.com/user-attachments/assets/8e2d85ff-7767-4850-84c9-67f5e0b62080)
+
+![framework](https://github.com/user-attachments/assets/cca0bad7-9456-4564-8258-3cda6ae1e6ec)
+
 <br>
 <br>
 
