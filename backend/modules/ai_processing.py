@@ -137,173 +137,6 @@ class DeepSeekProcessor:
             logger.exception(f"Error loading DeepSeek model from {model_path}: {e}")
             raise RuntimeError(f"Failed to load DeepSeek model: {e}")
 
-    async def summarize_paper(self, paper_dict: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Summarizes a paper using the DeepSeek model. Accepts paper data as a dictionary.
-
-        Args:
-            paper_dict: Dictionary containing paper details, expected keys:
-                        'title', 'authors', 'abstract', 'publication_date',
-                        'journal', 'url', 'source'.
-
-        Returns:
-            A dictionary containing the original paper info plus the 'summary'.
-            If summarization fails, the 'summary' field will contain an error message.
-        """
-        paper_title = paper_dict.get('title', 'Unknown Title') # Use .get for safety
-        logger.info(f"Starting summarization for paper: '{paper_title[:50]}...'")
-
-        # Create a copy to potentially modify (e.g., truncate abstract)
-        result_dict = paper_dict.copy()
-
-        try:
-            # Prepare the prompt using the dictionary
-            prompt = self._create_summary_prompt(paper_dict)
-
-            # --- Token Length Check and Truncation ---
-            # Calculate space needed for prompt + desired output length + buffer
-            prompt_allowance = self.max_token_limit - self.generation_max_new_tokens - 50 # 50 token buffer
-
-            # Tokenize the prompt to check its length
-            # Use truncation=False initially to get the true length
-            prompt_tokens = self.tokenizer.encode(prompt, truncation=False)
-            prompt_token_count = len(prompt_tokens)
-
-            if prompt_token_count > prompt_allowance:
-                logger.warning(f"Prompt for '{paper_title[:50]}...' is too long ({prompt_token_count} tokens, allowance {prompt_allowance}). Truncating abstract.")
-
-                # Calculate how many tokens to keep for the abstract
-                # Estimate non-abstract prompt length (crude but often sufficient)
-                temp_prompt_no_abstract = self._create_summary_prompt({**paper_dict, 'abstract': ''})
-                non_abstract_tokens = len(self.tokenizer.encode(temp_prompt_no_abstract))
-                abstract_allowance = prompt_allowance - non_abstract_tokens
-
-                if abstract_allowance <= 0:
-                     logger.error(f"Cannot summarize '{paper_title[:50]}...': Prompt without abstract already exceeds token limit.")
-                     raise ValueError("Prompt structure exceeds token limit even without abstract.")
-
-                original_abstract = paper_dict.get('abstract', '')
-                truncated_abstract = self._truncate_text(original_abstract, abstract_allowance)
-
-                # Recreate the prompt with the truncated abstract
-                temp_paper_dict = paper_dict.copy()
-                temp_paper_dict['abstract'] = truncated_abstract
-                prompt = self._create_summary_prompt(temp_paper_dict)
-                logger.info(f"Recreated prompt with truncated abstract (new length: {len(self.tokenizer.encode(prompt))} tokens).")
-
-
-            # --- Generate Summary ---
-            logger.debug(f"Generating summary for '{paper_title[:50]}...'")
-            summary = await self._generate_text_async(prompt)
-            logger.info(f"Successfully generated summary for '{paper_title[:50]}...'")
-
-            # Add summary to the result dictionary
-            result_dict['summary'] = summary.strip()
-
-            return result_dict
-
-        except Exception as e:
-            logger.exception(f"Error summarizing paper '{paper_title[:50]}...': {e}")
-            # Return original info with error message in summary field
-            result_dict['summary'] = f"Error generating summary: {str(e)}"
-            return result_dict
-
-    async def batch_summarize_papers(self, paper_dicts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Summarizes multiple papers concurrently using asyncio.gather.
-
-        Args:
-            paper_dicts: A list of dictionaries, where each dictionary represents a paper.
-
-        Returns:
-            A list of dictionaries, each containing paper info and its generated summary.
-        """
-        if not paper_dicts:
-            return []
-        logger.info(f"Starting batch summarization for {len(paper_dicts)} papers.")
-        tasks = [self.summarize_paper(paper_dict) for paper_dict in paper_dicts]
-        summary_results = await asyncio.gather(*tasks)
-        logger.info(f"Finished batch summarization for {len(paper_dicts)} papers.")
-        return summary_results
-
-    async def extract_keywords(self, user_input: str) -> Dict[str, List[str]]:
-        """
-        Extracts keywords/entities from user input using the DeepSeek model.
-        Designed to produce terms suitable for searching PubMed/Google Scholar.
-
-        Args:
-            user_input: The raw user question or query text.
-
-        Returns:
-            A dictionary containing a 'keywords' list. Returns basic tokenized
-            keywords as a fallback on error.
-        """
-        logger.info(f"Extracting keywords for input: '{user_input[:100]}...'")
-        sanitized_input = "" # Ensure defined in outer scope
-        try:
-            # 1. Sanitize the input
-            sanitized_input = self.sanitize_input(user_input)
-            if not sanitized_input:
-                 logger.warning("Keyword extraction failed: Sanitized input is empty.")
-                 return {"keywords": []}
-
-            # 2. Create the prompt
-            prompt = self._create_keyword_extraction_prompt(sanitized_input)
-
-            # 3. Generate response from the model
-            logger.debug("Generating keyword extraction response...")
-            raw_response = await self._generate_text_async(prompt)
-            logger.debug(f"Raw keyword extraction response: {raw_response}")
-
-
-            # 4. Parse the JSON response
-            try:
-                # Attempt to find JSON object within the response (more robust)
-                # Handles cases like ```json\n{...}\n``` or surrounding text
-                json_match = re.search(r'\{.*\}', raw_response, re.DOTALL | re.MULTILINE)
-                if json_match:
-                    json_string = json_match.group(0)
-                    # Further clean potential markdown code block markers
-                    json_string = re.sub(r'^```json\s*', '', json_string, flags=re.MULTILINE)
-                    json_string = re.sub(r'\s*```$', '', json_string, flags=re.MULTILINE)
-                    keywords_json = json.loads(json_string)
-                    logger.debug(f"Parsed JSON: {keywords_json}")
-                else:
-                    # If no clear JSON block found, try parsing the whole response
-                    logger.warning("Could not find clear JSON block in response, attempting to parse entire response.")
-                    keywords_json = json.loads(raw_response)
-
-                # Validate structure and return
-                if isinstance(keywords_json, dict) and "keywords" in keywords_json and isinstance(keywords_json["keywords"], list):
-                    # Optional: Further sanitize extracted keywords? (e.g., strip whitespace)
-                    keywords_json["keywords"] = [kw.strip() for kw in keywords_json["keywords"] if isinstance(kw, str) and kw.strip()]
-                    logger.info(f"Successfully extracted keywords: {keywords_json['keywords']}")
-                    return keywords_json
-                else:
-                     logger.error(f"Parsed JSON has unexpected structure: {keywords_json}")
-                     raise ValueError("Parsed JSON missing 'keywords' list.")
-
-            except (json.JSONDecodeError, ValueError) as e:
-                logger.error(f"Failed to parse keywords JSON: {e}. Raw response: '{raw_response}'")
-                # Fallback: extract quoted strings as potential keywords
-                keywords = re.findall(r'"([^"]+)"', raw_response)
-                if keywords:
-                     logger.warning(f"Falling back to regex extraction, found: {keywords}")
-                     return {"keywords": [kw.strip() for kw in keywords if kw.strip()]}
-                else:
-                     # Final fallback: simple tokenization of original sanitized input
-                     logger.warning("Falling back to simple tokenization.")
-                     words = sanitized_input.split()
-                     basic_keywords = [word.strip() for word in words if len(word.strip()) > 2] # Min length 3
-                     # If tokenization yields nothing, return the whole sanitized input as one keyword
-                     return {"keywords": basic_keywords or ([sanitized_input] if sanitized_input else [])}
-
-        except Exception as e:
-            logger.exception(f"Unexpected error during keyword extraction for input '{user_input[:100]}...': {e}")
-            # Final fallback in case of unexpected errors
-            words = sanitized_input.split() if sanitized_input else user_input.split()
-            basic_keywords = [word.strip() for word in words if len(word.strip()) > 2]
-            return {"keywords": basic_keywords or ([sanitized_input] if sanitized_input else [])}
 
     def sanitize_input(self, user_input: str) -> str:
         """
@@ -350,51 +183,7 @@ class DeepSeekProcessor:
 
         # logger.debug(f"Sanitized input: '{user_input}' -> '{sanitized}'") # Debug level might be too verbose
         return sanitized
-
-    def _create_summary_prompt(self, paper_dict: Dict[str, Any]) -> str:
-        """
-        Creates the prompt for summarizing a paper, using data from a dictionary.
-
-        Args:
-            paper_dict: Dictionary containing paper information.
-
-        Returns:
-            Formatted prompt string using DeepSeek chat template.
-        """
-        # Safely get attributes from the dictionary using .get() with defaults
-        title = paper_dict.get('title', 'Unknown Title')
-        authors = paper_dict.get('authors', [])
-        authors_str = ', '.join(authors) if isinstance(authors, list) and authors else 'Unknown Authors'
-        journal = paper_dict.get('journal', 'Unknown Journal')
-        pub_date = paper_dict.get('publication_date', 'Unknown Date') # Assumes date is already string/formatted
-        abstract = paper_dict.get('abstract', 'No abstract available.')
-
-        # Ensure abstract is a string
-        if not isinstance(abstract, str):
-             abstract = str(abstract)
-
-        # Use f-string with DeepSeek chat template structure
-        # Note: Ensure this template matches the fine-tuning/expected format of your specific DeepSeek model
-        prompt = f"""<|im_start|>system
-You are an expert AI assistant specializing in summarizing biomedical research papers. Your summaries should be clear, concise, and accurate, focusing on the key aspects relevant to researchers and clinicians.<|im_end|>
-<|im_start|>user
-Please generate a concise summary (around 150-200 words) of the following research paper. Focus on:
-1.  **Background & Objective**: Briefly state the context and purpose.
-2.  **Methods**: Summarize the key methods used.
-3.  **Key Findings**: Highlight the most important results.
-4.  **Conclusions & Implications**: State the main conclusions and their potential significance or clinical relevance.
-
-Use clear and professional language. Avoid jargon where possible, or explain it briefly.
-
-**Paper Details:**
-* **Title:** {title}
-* **Authors:** {authors_str}
-* **Journal:** {journal} ({pub_date})
-* **Abstract:**
-    {abstract}<|im_end|>
-<|im_start|>assistant
-"""
-        return prompt
+    
 
     def _create_keyword_extraction_prompt(self, sanitized_input: str) -> str:
         """
@@ -408,46 +197,16 @@ Use clear and professional language. Avoid jargon where possible, or explain it 
         """
         # Use f-string with DeepSeek chat template structure
         prompt = f"""<|im_start|>system
-You are an AI assistant specialized in processing biomedical research queries. Your task is to extract the most relevant keywords and concepts from a user's question that can be used to search scientific databases like PubMed or Google Scholar. Respond *only* with a valid JSON object containing a single key "keywords", which holds an array of the extracted strings.<|im_end|>
-<|im_start|>user
-Analyze the following user query and extract the core biomedical entities, concepts, conditions, treatments, and research intent. Format the output as a JSON object with a "keywords" array. Focus on terms that will yield relevant scientific literature.
-
-User Query: "{sanitized_input}"<|im_end|>
-<|im_start|>assistant
-"""
+        You are an AI assistant specialized in processing biomedical research queries. Your task is to extract the most relevant keywords and concepts from a user's question that can be used to search scientific databases like PubMed or Google Scholar. Respond *only* with a valid JSON object containing a single key "keywords", which holds an array of the extracted strings.<|im_end|>
+        <|im_start|>user
+        Analyze the following user query and extract the core biomedical entities, concepts, conditions, treatments, and research intent. Format the output as a JSON object with a "keywords" array. Focus on terms that will yield relevant scientific literature.
+        
+        User Query: "{sanitized_input}"<|im_end|>
+        <|im_start|>assistant
+        """
         # The final "<|im_start|>assistant\n" signals the model to start its response.
         return prompt
-
-    def _truncate_text(self, text: str, max_tokens: int) -> str:
-        """
-        Truncates text to approximately the specified maximum number of tokens.
-
-        Args:
-            text: The text to truncate.
-            max_tokens: The target maximum number of tokens.
-
-        Returns:
-            The truncated text, potentially with an indicator.
-        """
-        if not text or max_tokens <= 0:
-            return ""
-
-        # Encode the text to get tokens
-        # Use add_special_tokens=False to avoid counting special tokens if they aren't part of the text limit logic
-        tokens = self.tokenizer.encode(text, add_special_tokens=False, truncation=False)
-
-        if len(tokens) <= max_tokens:
-            return text # No truncation needed
-
-        # Truncate the token list
-        truncated_tokens = tokens[:max_tokens]
-
-        # Decode back to text
-        # Use clean_up_tokenization_spaces=True for better readability
-        truncated_text = self.tokenizer.decode(truncated_tokens, skip_special_tokens=True, clean_up_tokenization_spaces=True)
-
-        # Add an indicator that truncation occurred
-        return truncated_text + "... [truncated]"
+    
 
     async def _generate_text_async(self, prompt: str) -> str:
         """
@@ -470,8 +229,8 @@ User Query: "{sanitized_input}"<|im_end|>
              # Re-raise or return an error message
              # raise # Option 1: Re-raise the exception
              return f"Error: Text generation failed. Details: {str(e)}" # Option 2: Return error message
+        
 
-    # Removed @lru_cache decorator
     def _generate_text(self, prompt: str) -> str:
         """
         Synchronous core text generation function using the loaded model.
@@ -564,6 +323,299 @@ User Query: "{sanitized_input}"<|im_end|>
         except Exception as e:
             logger.exception(f"Core text generation error: {e}") # Log full traceback
             raise # Re-raise the original exception
+
+    
+    async def extract_keywords(self, user_input: str) -> Dict[str, List[str]]:
+        """
+        Extracts keywords/entities from user input using the DeepSeek model.
+        Designed to produce terms suitable for searching PubMed/Google Scholar.
+
+        Args:
+            user_input: The raw user question or query text.
+
+        Returns:
+            A dictionary containing a 'keywords' list. Returns basic tokenized
+            keywords as a fallback on error.
+        """
+        logger.info(f"Extracting keywords for input: '{user_input[:100]}...'")
+        sanitized_input = "" # Ensure defined in outer scope
+        try:
+            # 1. Sanitize the input
+            sanitized_input = self.sanitize_input(user_input)
+            if not sanitized_input:
+                 logger.warning("Keyword extraction failed: Sanitized input is empty.")
+                 return {"keywords": []}
+
+            # 2. Create the prompt
+            prompt = self._create_keyword_extraction_prompt(sanitized_input)
+
+            # 3. Generate response from the model
+            logger.debug("Generating keyword extraction response...")
+            raw_response = await self._generate_text_async(prompt)
+            logger.debug(f"Raw keyword extraction response: {raw_response}")
+
+
+            # 4. Parse the JSON response
+            try:
+                # Attempt to find JSON object within the response (more robust)
+                # Handles cases like ```json\n{...}\n``` or surrounding text
+                json_match = re.search(r'\{.*\}', raw_response, re.DOTALL | re.MULTILINE)
+                if json_match:
+                    json_string = json_match.group(0)
+                    # Further clean potential markdown code block markers
+                    json_string = re.sub(r'^```json\s*', '', json_string, flags=re.MULTILINE)
+                    json_string = re.sub(r'\s*```$', '', json_string, flags=re.MULTILINE)
+                    keywords_json = json.loads(json_string)
+                    logger.debug(f"Parsed JSON: {keywords_json}")
+                else:
+                    # If no clear JSON block found, try parsing the whole response
+                    logger.warning("Could not find clear JSON block in response, attempting to parse entire response.")
+                    keywords_json = json.loads(raw_response)
+
+                # Validate structure and return
+                if isinstance(keywords_json, dict) and "keywords" in keywords_json and isinstance(keywords_json["keywords"], list):
+                    # Optional: Further sanitize extracted keywords? (e.g., strip whitespace)
+                    keywords_json["keywords"] = [kw.strip() for kw in keywords_json["keywords"] if isinstance(kw, str) and kw.strip()]
+                    logger.info(f"Successfully extracted keywords: {keywords_json['keywords']}")
+                    return keywords_json
+                else:
+                     logger.error(f"Parsed JSON has unexpected structure: {keywords_json}")
+                     raise ValueError("Parsed JSON missing 'keywords' list.")
+
+            except (json.JSONDecodeError, ValueError) as e:
+                logger.error(f"Failed to parse keywords JSON: {e}. Raw response: '{raw_response}'")
+                # Fallback: extract quoted strings as potential keywords
+                keywords = re.findall(r'"([^"]+)"', raw_response)
+                if keywords:
+                     logger.warning(f"Falling back to regex extraction, found: {keywords}")
+                     return {"keywords": [kw.strip() for kw in keywords if kw.strip()]}
+                else:
+                     # Final fallback: simple tokenization of original sanitized input
+                     logger.warning("Falling back to simple tokenization.")
+                     words = sanitized_input.split()
+                     basic_keywords = [word.strip() for word in words if len(word.strip()) > 2] # Min length 3
+                     # If tokenization yields nothing, return the whole sanitized input as one keyword
+                     return {"keywords": basic_keywords or ([sanitized_input] if sanitized_input else [])}
+
+        except Exception as e:
+            logger.exception(f"Unexpected error during keyword extraction for input '{user_input[:100]}...': {e}")
+            # Final fallback in case of unexpected errors
+            words = sanitized_input.split() if sanitized_input else user_input.split()
+            basic_keywords = [word.strip() for word in words if len(word.strip()) > 2]
+            return {"keywords": basic_keywords or ([sanitized_input] if sanitized_input else [])}
+        
+    
+    def _create_summary_prompt(self, paper_dict: Dict[str, Any]) -> str:
+        """
+        Creates the prompt for summarizing a paper, using data from a dictionary.
+
+        Args:
+            paper_dict: Dictionary containing paper information.
+
+        Returns:
+            Formatted prompt string using DeepSeek chat template.
+        """
+        # Safely get attributes from the dictionary using .get() with defaults
+        title = paper_dict.get('title', 'Unknown Title')
+        authors = paper_dict.get('authors', [])
+        authors_str = ', '.join(authors) if isinstance(authors, list) and authors else 'Unknown Authors'
+        journal = paper_dict.get('journal', 'Unknown Journal')
+        pub_date = paper_dict.get('publication_date', 'Unknown Date') # Assumes date is already string/formatted
+        abstract = paper_dict.get('abstract', 'No abstract available.')
+
+        # Ensure abstract is a string
+        if not isinstance(abstract, str):
+             abstract = str(abstract)
+
+        # Use f-string with DeepSeek chat template structure
+        # Note: Ensure this template matches the fine-tuning/expected format of your specific DeepSeek model
+        prompt = f"""<|im_start|>system
+        You are an expert AI assistant specializing in summarizing biomedical research papers. Your summaries should be clear, concise, and accurate, focusing on the key aspects relevant to researchers and clinicians.<|im_end|>
+        <|im_start|>user
+        Please generate a concise summary (around 150-200 words) of the following research paper. Focus on:
+        1.  **Background & Objective**: Briefly state the context and purpose.
+        2.  **Methods**: Summarize the key methods used.
+        3.  **Key Findings**: Highlight the most important results.
+        4.  **Conclusions & Implications**: State the main conclusions and their potential significance or clinical relevance.
+        
+        Use clear and professional language. Avoid jargon where possible, or explain it briefly.
+        
+        **Paper Details:**
+        * **Title:** {title}
+        * **Authors:** {authors_str}
+        * **Journal:** {journal} ({pub_date})
+        * **Abstract:**
+        {abstract}<|im_end|>
+        <|im_start|>assistant
+        """
+        return prompt
+    
+
+    def _truncate_text(self, text: str, max_tokens: int) -> str:
+        """
+        Truncates text to approximately the specified maximum number of tokens.
+
+        Args:
+            text: The text to truncate.
+            max_tokens: The target maximum number of tokens.
+
+        Returns:
+            The truncated text, potentially with an indicator.
+        """
+        if not text or max_tokens <= 0:
+            return ""
+
+        # Encode the text to get tokens
+        # Use add_special_tokens=False to avoid counting special tokens if they aren't part of the text limit logic
+        tokens = self.tokenizer.encode(text, add_special_tokens=False, truncation=False)
+
+        if len(tokens) <= max_tokens:
+            return text # No truncation needed
+
+        # Truncate the token list
+        truncated_tokens = tokens[:max_tokens]
+
+        # Decode back to text
+        # Use clean_up_tokenization_spaces=True for better readability
+        truncated_text = self.tokenizer.decode(truncated_tokens, skip_special_tokens=True, clean_up_tokenization_spaces=True)
+
+        # Add an indicator that truncation occurred
+        return truncated_text + "... [truncated]"
+    
+
+    async def summarize_paper(self, paper_dict: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Summarizes a paper using the DeepSeek model. Accepts paper data as a dictionary.
+
+        Args:
+            paper_dict: Dictionary containing paper details, expected keys:
+                        'title', 'authors', 'abstract', 'publication_date',
+                        'journal', 'url', 'source'.
+
+        Returns:
+            A dictionary containing the original paper info plus the 'summary'.
+            If summarization fails, the 'summary' field will contain an error message.
+        """
+        paper_title = paper_dict.get('title', 'Unknown Title') # Use .get for safety
+        logger.info(f"Starting summarization for paper: '{paper_title[:50]}...'")
+
+        # Create a copy to potentially modify (e.g., truncate abstract)
+        result_dict = paper_dict.copy()
+
+        try:
+            # Prepare the prompt using the dictionary
+            prompt = self._create_summary_prompt(paper_dict)
+
+            # --- Token Length Check and Truncation ---
+            # Calculate space needed for prompt + desired output length + buffer
+            prompt_allowance = self.max_token_limit - self.generation_max_new_tokens - 50 # 50 token buffer
+
+            # Tokenize the prompt to check its length
+            # Use truncation=False initially to get the true length
+            prompt_tokens = self.tokenizer.encode(prompt, truncation=False)
+            prompt_token_count = len(prompt_tokens)
+
+            if prompt_token_count > prompt_allowance:
+                logger.warning(f"Prompt for '{paper_title[:50]}...' is too long ({prompt_token_count} tokens, allowance {prompt_allowance}). Truncating abstract.")
+
+                # Calculate how many tokens to keep for the abstract
+                # Estimate non-abstract prompt length (crude but often sufficient)
+                temp_prompt_no_abstract = self._create_summary_prompt({**paper_dict, 'abstract': ''})
+                non_abstract_tokens = len(self.tokenizer.encode(temp_prompt_no_abstract))
+                abstract_allowance = prompt_allowance - non_abstract_tokens
+
+                if abstract_allowance <= 0:
+                     logger.error(f"Cannot summarize '{paper_title[:50]}...': Prompt without abstract already exceeds token limit.")
+                     raise ValueError("Prompt structure exceeds token limit even without abstract.")
+
+                original_abstract = paper_dict.get('abstract', '')
+                truncated_abstract = self._truncate_text(original_abstract, abstract_allowance)
+
+                # Recreate the prompt with the truncated abstract
+                temp_paper_dict = paper_dict.copy()
+                temp_paper_dict['abstract'] = truncated_abstract
+                prompt = self._create_summary_prompt(temp_paper_dict)
+                logger.info(f"Recreated prompt with truncated abstract (new length: {len(self.tokenizer.encode(prompt))} tokens).")
+
+
+            # --- Generate Summary ---
+            logger.debug(f"Generating summary for '{paper_title[:50]}...'")
+            summary = await self._generate_text_async(prompt)
+            logger.info(f"Successfully generated summary for '{paper_title[:50]}...'")
+
+            # Add summary to the result dictionary
+            result_dict['summary'] = summary.strip()
+
+            return result_dict
+
+        except Exception as e:
+            logger.exception(f"Error summarizing paper '{paper_title[:50]}...': {e}")
+            # Return original info with error message in summary field
+            result_dict['summary'] = f"Error generating summary: {str(e)}"
+            return result_dict
+
+
+    async def batch_summarize_papers(self, paper_dicts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Summarizes multiple papers concurrently using asyncio.gather.
+
+        Args:
+            paper_dicts: A list of dictionaries, where each dictionary represents a paper.
+
+        Returns:
+            A list of dictionaries, each containing paper info and its generated summary.
+        """
+        if not paper_dicts:
+            return []
+        logger.info(f"Starting batch summarization for {len(paper_dicts)} papers.")
+        tasks = [self.summarize_paper(paper_dict) for paper_dict in paper_dicts]
+        summary_results = await asyncio.gather(*tasks)
+        logger.info(f"Finished batch summarization for {len(paper_dicts)} papers.")
+        return summary_results
+        
+
+    def _create_final_summary_prompt(self, summaries: List[str], user_query: str) -> str:
+        """
+        Creates the prompt for generating a final summary from multiple paper summaries.
+
+        Args:
+            summaries: A list of paper summaries.
+            user_query: The original user query.
+
+        Returns:
+            Formatted prompt string.
+        """
+        summaries_text = "\n\n".join([f"Summary {i+1}:\n{summary}" for i, summary in enumerate(summaries)])
+        prompt = f"""<|im_start|>system
+        You are an expert AI assistant tasked with synthesizing a comprehensive answer to a user's question based on multiple research paper summaries. Read the following summaries and generate a concise (around 250-350 words) answer that addresses the user's query, highlighting key findings and potential implications across the different papers.
+        User Query: "{user_query}"
+        Paper Summaries:
+        {summaries_text}<|im_end|>
+        <|im_start|>assistant
+        """
+        return prompt
+    
+
+    async def summarize_multiple_summaries(self, summaries: List[str], user_query: str) -> str:
+        """
+        Generates a final, consolidated summary from a list of individual paper summaries.
+
+        Args:
+            summaries: A list of strings, where each string is a summary of a paper.
+            user_query: The original user query that led to these papers.
+
+        Returns:
+            A string containing the final, consolidated summary.
+        """
+        logger.info(f"Starting final summarization for query: '{user_query[:50]}...'")
+        try:
+            prompt = self._create_final_summary_prompt(summaries, user_query)
+            final_summary = await self._generate_text_async(prompt)
+            logger.info(f"Successfully generated final summary for query: '{user_query[:50]}...'")
+            return final_summary.strip()
+        except Exception as e:
+            logger.exception(f"Error generating final summary for query '{user_query[:50]}...': {e}")
+            return f"Error generating final summary: {str(e)}"
 
 
 # Example Usage (Optional - for testing this module directly)

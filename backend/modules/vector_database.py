@@ -213,7 +213,7 @@ class VectorDatabase:
         text: str,
         doc_type: str,
         metadata: Optional[Dict[str, Any]] = None
-    ) -> Optional[int]:
+    ) -> Optional[str]:
         """
         Adds or replaces a single document in the vector database.
 
@@ -237,18 +237,20 @@ class VectorDatabase:
 
         # Run the potentially blocking/CPU-intensive sync logic in a thread pool
         loop = asyncio.get_event_loop()
+
         try:
-            # Pass metadata or an empty dict if None
-            result_idx = await loop.run_in_executor(
+            # Pass metadata or an empty dict if None, capture the returned doc_id
+            result_doc_id = await loop.run_in_executor(
                 None, self._add_document_sync, doc_id, text, doc_type, metadata or {}
             )
-            return result_idx
+            return result_doc_id
+        
         except Exception as e:
              # Error should be logged within _add_document_sync, just return None here
              logger.error(f"Async wrapper caught exception during add_document for doc_id {doc_id}: {e}")
              return None
 
-    def _add_document_sync(self, doc_id: str, text: str, doc_type: str, metadata: Dict[str, Any]) -> Optional[int]:
+    def _add_document_sync(self, doc_id: str, text: str, doc_type: str, metadata: Dict[str, Any]) -> Optional[str]:
         """Synchronous internal logic for adding a document."""
         with self._lock: # Ensure exclusive access to index and metadata
             try:
@@ -280,15 +282,21 @@ class VectorDatabase:
                         return None # Cannot add if training fails
 
                 # --- Add the new vector and metadata ---
-                current_index_pos = self.index.ntotal
+                current_index_pos = self.index.ntotal  # Get index before adding
                 self.index.add(embedding)
 
                 # Verify vector was added
                 if self.index.ntotal <= current_index_pos:
                      logger.error(f"FAISS index count did not increase after adding vector for doc_id {doc_id}. Addition failed.")
-                     # Attempt to rollback metadata addition if possible? Complex. Best to log and return None.
+                     # Indicate failure
                      return None
 
+                # Check if metadata already exists (redundant check if existing ID handling above works, but safe)
+                meta_exists = any(m['id'] == doc_id for m in self.metadata if not m.get('is_deleted'))
+                if meta_exists:
+                    logger.warning(f"Metadata for {doc_id} seems to exist already despite delete/add logic. Overwriting/appending.")
+                    # Consider how to handle this case if it occurs. For now, just append.
+                    
                 self.metadata.append({
                     "id": doc_id,
                     "type": doc_type,
@@ -300,7 +308,7 @@ class VectorDatabase:
 
                 logger.info(f"Successfully added document '{doc_id}' (type: {doc_type}) at index {current_index_pos}.")
                 self._maybe_save() # Check if saving is needed
-                return current_index_pos # Return the index where it was added
+                return doc_id  # Return doc_id on success
 
             except Exception as e:
                 # Catch-all for unexpected errors during the process

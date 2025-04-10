@@ -3,18 +3,20 @@ import aiohttp
 import asyncio
 import logging
 from typing import List, Dict, Any, Optional
-from bs4 import BeautifulSoup # Note: BeautifulSoup is imported but not used. Consider removing if not needed elsewhere.
 import xml.etree.ElementTree as ET
-import scholarly
+from scholarly import scholarly
 import datetime
 import time
 import backoff
+import re
 
 # Configure logging
 # It's often better to configure logging in the main application entry point (e.g., app.py)
 # But if this module is run standalone or needs specific logging, configure here.
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+
 
 class PaperInfo:
     """
