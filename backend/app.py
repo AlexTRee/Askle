@@ -9,7 +9,7 @@ import uvicorn
 import os
 import asyncio
 import logging
-import datetime
+from datetime import datetime, timezone
 import traceback # For detailed error logging
 
 # --- Import Custom Modules ---
@@ -17,7 +17,7 @@ import traceback # For detailed error logging
 try:
     from modules.paper_retrieval import PubMedRetriever, GoogleScholarRetriever, PaperInfo
     from modules.ai_processing import DeepSeekProcessor
-    from modules.sql_database import SQLDatabase
+    from modules.sql_database import SQLDatabase, QueryStatus
     from modules.vector_database import VectorDatabase
 except ImportError as e:
     print(f"Error importing modules: {e}. Make sure modules are in the correct path.")
@@ -58,9 +58,9 @@ api_router = APIRouter(prefix="/api")
 
 # --- Configuration & Global Variables ---
 # Use environment variables or defaults
-SQL_DB_PATH = os.getenv("SQL_DB_PATH", "./data/papers.db") # Ensure ./data exists
-VECTOR_INDEX_PATH = os.getenv("VECTOR_INDEX_PATH", "./data/vector_index.faiss")
-VECTOR_METADATA_PATH = os.getenv("VECTOR_METADATA_PATH", "./data/vector_metadata.pkl")
+SQL_DB_PATH = os.getenv("SQL_DB_PATH", "./backend/data/papers.db") # Ensure ./data exists
+VECTOR_INDEX_PATH = os.getenv("VECTOR_INDEX_PATH", "./backend/data/vector_index.faiss")
+VECTOR_METADATA_PATH = os.getenv("VECTOR_METADATA_PATH", "./backend/data/vector_metadata.pkl")
 DEEPSEEK_MODEL_PATH = os.getenv("DEEPSEEK_MODEL_PATH", None) # Let DeepSeekProcessor handle default
 # Max papers to fetch from each source
 PAPERS_PER_SOURCE = 5
@@ -97,11 +97,19 @@ async def startup_event():
         )
         logger.info("Initialized Vector database.")
 
-        # Initialize AI Processor (can take time to load model)
-        ai_processor = DeepSeekProcessor(model_path=DEEPSEEK_MODEL_PATH) # Pass model path if needed
+        # Initialize AI Processor (can take time to load model)  
+        ai_processor = DeepSeekProcessor(model_path=DEEPSEEK_MODEL_PATH)  # Pass model path if needed
         logger.info("Initialized DeepSeek AI Processor.")
 
         # Initialize Paper Retrievers
+         # TODO 
+        # Check for environment variable, use API key for better request rates
+        # 3 requests/second without an API key, 10 requests/second with API key.
+        # pubmed_api_key = os.getenv("PUBMED_API_KEY")
+        # if pubmed_api_key:
+        #     logger.info("PubMed Retriever initialized with API key.")
+        # else:
+        #     logger.info("PubMed Retriever initialized without API key (rate limits apply).")
         pubmed_retriever = PubMedRetriever()
         scholar_retriever = GoogleScholarRetriever()
         logger.info("Initialized Paper Retrievers.")
@@ -145,15 +153,16 @@ class AskQuestionResponse(BaseModel):
     query: str
     status: str = Field(default="processing", description="Indicates that processing has started.")
     message: str = Field(default="Request received. Processing in background.", description="User-friendly message.")
-    timestamp: str = Field(default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat())
+    timestamp: str = Field(default_factory=lambda: datetime.now(datetime.timezone.utc).isoformat())
 
 class StatusResponse(BaseModel):
     """Response for the /status endpoint."""
     query: str
-    status: str = Field(..., description="Current status: 'processing', 'completed', or 'error'.")
+    # Use the QueryStatus enum for the status field
+    status: QueryStatus = Field(..., description="Current status: 'processing', 'completed', or 'error'.")
     summaries: Optional[List[PaperSummaryResponse]] = Field(default=None, description="List of summaries if status is 'completed'.")
     error_message: Optional[str] = Field(default=None, description="Error details if status is 'error'.")
-    timestamp: str = Field(default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat())
+    timestamp: str = Field(default_factory=lambda: datetime.now(datetime.timezone.utc).isoformat())
 
 class HistoryItem(BaseModel):
     query: str
@@ -198,12 +207,14 @@ async def process_question_background(
     scholar_retriever_dep: GoogleScholarRetriever
 ):
     """
-    The core background task to handle the new workflow.
+    The core background task. Includes error handling to update cache status.
     Fetches papers based on keywords, stores abstracts, summarizes, updates storage, and caches results.
     """
     logger.info(f"Background task started for query: '{original_query[:100]}...'")
-    task_start_time = datetime.datetime.now(datetime.timezone.utc)
+    task_start_time = datetime.now(datetime.timezone.utc)
     processed_paper_sql_ids = [] # Keep track of IDs for caching
+    # Ensure cache entry exists with 'processing' status initially
+    await sql_db_dep.cache_query(original_query, status=QueryStatus.PROCESSING)
 
     try:
         # 1. Extract Keywords
@@ -236,7 +247,8 @@ async def process_question_background(
 
         if not all_retrieved_paper_infos:
             logger.warning(f"No papers found from any source for query: '{search_query}'. Caching empty result.")
-            await sql_db_dep.cache_query(original_query, []) # Cache empty result
+            # Cache COMPLETED status with empty list
+            await sql_db_dep.cache_query(original_query, [], status=QueryStatus.COMPLETED)
             return # Stop processing
 
         logger.info(f"Total papers retrieved: {len(all_retrieved_paper_infos)}")
@@ -259,28 +271,35 @@ async def process_question_background(
 
             # --- Optional: Add Abstract to Vector DB ---
             # Create a unique doc ID for the abstract
-            abstract_doc_id = f"{paper_dict['url']}_abstract"
-            # Prepare metadata for vector DB
-            vector_meta = {
-                "url": paper_dict['url'],
-                "title": paper_dict['title'],
-                "source": paper_dict['source'],
-                # Add sql_paper_id later if possible, or store URL here and link later
-            }
-            # Add task to vector add list (non-blocking)
-            vector_abstract_tasks.append(
-                vector_db_dep.add_document(
-                    doc_id=abstract_doc_id,
-                    text=paper_dict['abstract'],
-                    doc_type="abstract",
-                    metadata=vector_meta
-                )
-            )
-            # We don't await here, gather results later. Get the vector ID *after* SQL insert.
+            abstract_text = paper_dict.get('abstract', '')
+            paper_url = paper_dict.get('url', '')
+
+            # Add abstract vector sequentially BEFORE adding to SQL
+            abstract_vector_id: Optional[str] = None # Initialize
+            if abstract_text and paper_url:
+                    abstract_doc_id = f"{paper_url}_abstract"
+                    vector_meta = {"url": paper_url, 
+                                   "title": paper_dict.get('title',''), 
+                                   "source": paper_dict.get('source','')}
+                                    # Add sql_paper_id later if possible, or store URL here and link later
+                    try:
+                        # Await the vector addition here to get the ID
+                        abstract_vector_id = await vector_db_dep.add_document(
+                            doc_id=abstract_doc_id,
+                            text=abstract_text,
+                            doc_type="abstract",
+                            metadata=vector_meta
+                        )
+                        if abstract_vector_id:
+                            logger.info(f"Stored abstract vector with ID: {abstract_vector_id}")
+                        else:
+                            logger.warning(f"Failed to store abstract vector for URL {paper_url}")
+                    except Exception as vec_e:
+                        logger.error(f"Error adding abstract vector for {paper_url}: {vec_e}")
 
             # --- Add Paper to SQL DB ---
-            # Initially add without vector IDs, or pass None
-            sql_paper_id = await sql_db_dep.add_paper(paper_dict, abstract_vector_id=None) # Pass None initially
+            # Pass the obtained abstract_vector_id
+            sql_paper_id = await sql_db_dep.add_paper(paper_dict, abstract_vector_id=abstract_vector_id)
 
             if sql_paper_id is not None:
                 logger.info(f"Stored paper '{paper_dict['title'][:30]}...' in SQL DB with ID: {sql_paper_id}")
@@ -295,17 +314,17 @@ async def process_question_background(
         # If you need the abstract vector IDs to store in SQL immediately, you'd need a more complex flow.
         # For simplicity, we add them async here and don't store the returned ID back in SQL for now.
         # If storing abstract_vector_id in SQL is critical, modify sql_db.add_paper and the flow here.
-        logger.info(f"Waiting for {len(vector_abstract_tasks)} abstract vector additions (if any)...")
-        vector_abstract_results = await asyncio.gather(*vector_abstract_tasks, return_exceptions=True)
-        for i, result in enumerate(vector_abstract_results):
-             if isinstance(result, Exception):
-                  logger.error(f"Error adding abstract vector (task {i}): {result}")
-             # else: logger.debug(f"Abstract vector added at index: {result}")
-
+        # logger.info(f"Waiting for {len(vector_abstract_tasks)} abstract vector additions (if any)...")
+        # vector_abstract_results = await asyncio.gather(*vector_abstract_tasks, return_exceptions=True)
+        # for i, result in enumerate(vector_abstract_results):
+        #      if isinstance(result, Exception):
+        #           logger.error(f"Error adding abstract vector (task {i}): {result}")
+        #      else: logger.debug(f"Abstract vector added at index: {result}")
 
         if not initial_paper_data_for_summary:
             logger.error("No papers were successfully stored in the SQL database. Aborting summarization.")
-            await sql_db_dep.cache_query(original_query, []) # Cache empty result
+            # Cache ERROR Status
+            await sql_db_dep.cache_query(original_query, status=QueryStatus.ERROR, error_message="Failed to store retrieved papers in database.")
             return
 
         # 4. Batch Summarize Papers
@@ -316,7 +335,8 @@ async def process_question_background(
 
         # 5. Update DB with Summaries
         logger.info("Step 5: Updating SQL DB and adding summaries to Vector DB...")
-        vector_summary_tasks = []
+        # vector_summary_tasks = []
+        # Store tasks for SQL updates, process one paper at a time for vector/SQL link
         sql_update_tasks = []
 
         for paper_summary_dict in papers_with_summaries:
@@ -327,68 +347,73 @@ async def process_question_background(
             if not sql_id or not summary_text or summary_text.startswith("Error generating summary:"):
                 logger.warning(f"Skipping summary update for paper SQL ID {sql_id} due to missing ID or summary error.")
                 continue
+            
+            # Add summary vector sequentially BEFORE updating SQL
+            summary_vector_id: Optional[str] = None # Initialize
+            if summary_text and paper_url:
+                 summary_doc_id = f"{paper_url}_summary"
+                 vector_meta = {
+                     "sql_paper_id": sql_id,
+                     "url": paper_url,
+                     "title": paper_summary_dict.get('title', ''),
+                     "source": paper_summary_dict.get('source', ''),
+                 }
+                 try:
+                    # Await the vector addition here to get the ID
+                    summary_vector_id = await vector_db_dep.add_document(
+                         doc_id=summary_doc_id,
+                         text=summary_text,
+                         doc_type="summary",
+                         metadata=vector_meta
+                    )
+                    if summary_vector_id:
+                         logger.info(f"Stored summary vector with ID: {summary_vector_id} for SQL ID {sql_id}")
+                    else:
+                         logger.warning(f"Failed to store summary vector for SQL ID {sql_id}")
+                 except Exception as vec_e:
+                      logger.error(f"Error adding summary vector for SQL ID {sql_id}: {vec_e}")
 
-            # --- Optional: Add Summary to Vector DB ---
-            summary_doc_id = f"{paper_url}_summary"
-            vector_meta = {
-                "sql_paper_id": sql_id, # Now we have the SQL ID
-                "url": paper_url,
-                "title": paper_summary_dict.get('title', ''),
-                "source": paper_summary_dict.get('source', ''),
-            }
-            vector_summary_tasks.append(
-                 vector_db_dep.add_document(
-                    doc_id=summary_doc_id,
-                    text=summary_text,
-                    doc_type="summary",
-                    metadata=vector_meta
-                )
-            )
-            # Again, we don't store the summary_vector_id back to SQL for simplicity here.
-            # If needed, await the result and pass it to update_paper_summary.
-
-            # --- Update SQL DB with Summary ---
+            # Update SQL DB (Add task to list), pass summary_vector_id
             sql_update_tasks.append(
                 sql_db_dep.update_paper_summary(
                     paper_id=sql_id,
                     summary=summary_text,
-                    summary_vector_id=None # Pass None for now
+                    summary_vector_id=summary_vector_id # Pass the obtained ID
                 )
             )
 
-        # --- Await Vector Summary Additions & SQL Updates ---
-        logger.info(f"Waiting for {len(vector_summary_tasks)} summary vector additions...")
-        vector_summary_results = await asyncio.gather(*vector_summary_tasks, return_exceptions=True)
-        for i, result in enumerate(vector_summary_results):
-             if isinstance(result, Exception): logger.error(f"Error adding summary vector (task {i}): {result}")
-
+        # --- Await SQL Updates Concurrently ---
         logger.info(f"Waiting for {len(sql_update_tasks)} SQL summary updates...")
         sql_update_results = await asyncio.gather(*sql_update_tasks, return_exceptions=True)
         successful_updates = 0
         for i, result in enumerate(sql_update_results):
              if isinstance(result, Exception): logger.error(f"Error updating SQL summary (task {i}): {result}")
              elif result is True: successful_updates += 1
-             # else: logger.warning(f"SQL summary update task {i} returned False.")
         logger.info(f"Successfully updated {successful_updates} summaries in SQL DB.")
 
-
-        # 6. Cache Final Results
+        # 6. Cache Final Results (Success)
         # Cache the list of successfully processed SQL paper IDs against the original query
         logger.info(f"Step 6: Caching results for original query: '{original_query[:100]}...'")
         if processed_paper_sql_ids:
-            await sql_db_dep.cache_query(original_query, processed_paper_sql_ids)
+             # Cache COMPLETED status with paper IDs
+            await sql_db_dep.cache_query(original_query, processed_paper_sql_ids, status=QueryStatus.COMPLETED)
             logger.info(f"Cached {len(processed_paper_sql_ids)} paper IDs for the query.")
         else:
-            logger.warning("No paper IDs to cache for the query.")
+            logger.warning("No paper IDs to cache, but process completed. Caching empty completed state.")
+             # Cache COMPLETED status with empty list
+            await sql_db_dep.cache_query(original_query, [], status=QueryStatus.COMPLETED)
 
-        task_end_time = datetime.datetime.now(datetime.timezone.utc)
+        task_end_time = datetime.now(datetime.timezone.utc)
         duration = task_end_time - task_start_time
         logger.info(f"Background task for query '{original_query[:100]}...' completed successfully in {duration}.")
 
+    # Catch specific exceptions if needed, otherwise broad Exception
     except Exception as e:
-        logger.exception(f"Error during background processing for query '{original_query[:100]}...': {e}")
-        # Optionally, cache an error state? For now, just log.
-        # await sql_db_dep.cache_query(original_query, [], status="error", message=str(e)) # Needs DB schema change
+        # Cache ERROR status on any failure
+        error_details = f"Error type: {type(e).__name__}. Details: {str(e)}"
+        full_traceback = traceback.format_exc() # Get full traceback for logs
+        logger.exception(f"Critical error during background processing for query '{original_query[:100]}...': {error_details}\nTraceback:\n{full_traceback}")
+        await sql_db_dep.cache_query(original_query, status=QueryStatus.ERROR, error_message=error_details)
 
 
 # --- API Routes ---
@@ -413,29 +438,48 @@ async def ask_question(
 ):
     """
     Accepts a user's research question.
-    Checks cache; if not found, starts background processing and returns an 'Accepted' response.
+    Checks cache; if completed or error, returns status immediately.
+    If processing or not found, ensures background task is running (or starts it).
     """
     original_query = request.query
     logger.info(f"Received /ask request for query: '{original_query[:100]}...'")
 
     # 1. Check Cache First
     try:
-        cached_results = await sql_db_dep.get_cached_query(original_query)
-        if cached_results:
-            logger.info(f"Cache hit for query: '{original_query[:100]}...'. Returning cached results immediately.")
-            # If found in cache, return 200 OK with results directly (or redirect to status?)
-            # For consistency with background processing, maybe still return 202 and let status handle it?
-            # Let's return 202 but indicate cache hit in message for clarity.
+        cache_data = await sql_db_dep.get_cached_query(original_query)
+        
+        if cache_data and cache_data["status"] in [QueryStatus.COMPLETED, QueryStatus.ERROR]:
+            logger.info(f"Query '{original_query[:100]}...' already processed (Status: {cache_data['status'].value}). Informing user.")
+            # Return 202 Accepted, but indicate the status is already known
             return AskQuestionResponse(
                 query=original_query,
-                status="completed_cached",
-                message="Query results found in cache. Use /api/status to retrieve."
+                status=cache_data["status"].value, # Return the actual final status
+                message=f"Query already processed. Status: {cache_data['status'].value}. Use /api/status to retrieve details."
             )
+        elif cache_data and cache_data["status"] == QueryStatus.PROCESSING:
+             logger.info(f"Query '{original_query[:100]}...' is already processing.")
+             # Already processing, just return Accepted
+             return AskQuestionResponse(query=original_query, status="processing", message="Request is already being processed.")
+        
+        # Cache miss (cache_data is None) or expired - Proceed to start background task
+        logger.info(f"Query '{original_query[:100]}...' not found in cache or requires reprocessing. Starting background task.")
+        background_tasks.add_task(
+            process_question_background,
+            original_query,
+            sql_db_dep,
+            vector_db_dep,
+            ai_processor_dep,
+            pubmed_retriever_dep,
+            scholar_retriever_dep
+        )
+        # Return 'Accepted' Response
+        return AskQuestionResponse(query=original_query, status="processing", message="Request received. Processing initiated.")
+    
     except Exception as e:
-        logger.exception(f"Error checking cache for query '{original_query[:100]}...': {e}")
-        # Proceed as if not cached, but log the error
+        logger.exception(f"Error during /ask endpoint for query '{original_query[:100]}...': {e}")
+        raise HTTPException(status_code=500, detail="Internal server error processing ask request.")
 
-    # 2. If Not Cached, Start Background Task
+    # 2. If Not Cached, Start Background Task   
     logger.info(f"Cache miss for query: '{original_query[:100]}...'. Starting background processing.")
     background_tasks.add_task(
         process_question_background,
@@ -459,54 +503,49 @@ async def check_status(
     sql_db_dep: SQLDatabase = Depends(get_sql_db)
 ):
     """
-    Checks the status of a previously submitted query.
-    Returns 'processing', 'completed' with summaries, or 'error'.
+    Checks the status of a previously submitted query using the updated cache logic.
     """
     logger.info(f"Received /status request for query: '{query[:100]}...'")
     try:
-        # Check SQL cache for results associated with the original query
-        cached_papers = await sql_db_dep.get_cached_query(query)
+        # Use the updated SQL method
+        cache_data = await sql_db_dep.get_cached_query(query)
 
-        if cached_papers is None:
-             # This case might indicate an error during caching or query never submitted
-             # Let's assume 'processing' for now, or maybe 'not_found'?
-             logger.warning(f"Status check: Query '{query[:100]}...' not found in cache (returned None). Assuming processing or error.")
-             # Check if the query exists in the 'queries' table at all? Requires new DB method.
-             # For now, return processing.
-             return StatusResponse(query=query, status="processing") # Or potentially error/not_found
+        if cache_data is None:
+             # Query never submitted or issue finding it
+             logger.warning(f"Status check: Query '{query[:100]}...' not found in cache.")
+             # Return a specific status or error? Let's use ERROR for now.
+             return StatusResponse(query=query, status=QueryStatus.ERROR, error_message="Query not found or never submitted.")
 
-        elif isinstance(cached_papers, list) and not cached_papers:
-             # Empty list means processing finished but found no relevant papers
-             logger.info(f"Status check: Query '{query[:100]}...' completed with no results found.")
-             return StatusResponse(query=query, status="completed", summaries=[])
+        # Prepare response based on cache_data
+        response_status = cache_data["status"]
+        response_error = cache_data["error_message"]
+        response_summaries = None
 
-        elif isinstance(cached_papers, list) and cached_papers:
-             # Found results
-             logger.info(f"Status check: Query '{query[:100]}...' completed with {len(cached_papers)} results.")
-             summaries = []
-             for paper in cached_papers:
-                 # Map DB dictionary to Pydantic response model
-                 summaries.append(PaperSummaryResponse(
+        if response_status == QueryStatus.COMPLETED:
+             response_summaries = []
+             for paper in cache_data.get("papers", []):
+                 response_summaries.append(PaperSummaryResponse(
                      sql_id=paper.get("id"),
                      title=paper.get("title", "N/A"),
                      authors=paper.get("authors", []),
-                     publication_date=paper.get("publication_date"), # Already ISO string or None from DB method
+                     publication_date=paper.get("publication_date"),
                      journal=paper.get("journal", "N/A"),
                      abstract=paper.get("abstract", ""),
-                     summary=paper.get("summary", ""), # This should be the generated summary
+                     summary=paper.get("summary", ""),
                      url=paper.get("url", ""),
                      source=paper.get("source", "N/A")
                  ))
-             return StatusResponse(query=query, status="completed", summaries=summaries)
-
-        else:
-             # Should not happen if get_cached_query returns list or None, but handle defensively
-             logger.error(f"Status check: Unexpected result type from get_cached_query for '{query[:100]}...': {type(cached_papers)}")
-             return StatusResponse(query=query, status="error", error_message="Internal error checking status.")
+        return StatusResponse(
+            query=query,
+            status=response_status,
+            summaries=response_summaries,
+            error_message=response_error
+        )
 
     except Exception as e:
         logger.exception(f"Error checking status for query '{query[:100]}...': {e}")
-        return StatusResponse(query=query, status="error", error_message=str(e))
+        # Return generic error status
+        return StatusResponse(query=query, status=QueryStatus.ERROR, error_message=f"Internal server error checking status: {str(e)}")
 
 
 @api_router.get("/history",
