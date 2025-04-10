@@ -6,19 +6,14 @@ RUN apt-get update && apt-get install -y build-essential git \
     && rm -rf /var/lib/apt/lists/*
     
 WORKDIR /app
-    
-# Copy Python requirements & install
-COPY backend/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy backend code
 COPY backend/ ./backend/
 
-# Create a build directory for frontend files
-RUN mkdir -p build
+# Add backend/ to PYTHONPATH
+ENV PYTHONPATH="${PYTHONPATH}:/app/backend"
 
-# Copy frontend build if it exists (will be overridden by volume in dev)
-COPY frontend/build ./build/
+# Copy Python requirements & install
+RUN pip install --no-cache-dir -r /app/backend/requirements.txt
 
 # Ensure data folders exist
 RUN mkdir -p /app/backend/data/hub/models--deepseek-ai--deepseek-r1-distill-qwen-1.5b
