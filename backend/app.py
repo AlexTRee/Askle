@@ -153,7 +153,7 @@ class AskQuestionResponse(BaseModel):
     query: str
     status: str = Field(default="processing", description="Indicates that processing has started.")
     message: str = Field(default="Request received. Processing in background.", description="User-friendly message.")
-    timestamp: str = Field(default_factory=lambda: datetime.now(datetime.timezone.utc).isoformat())
+    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 class StatusResponse(BaseModel):
     """Response for the /status endpoint."""
@@ -162,7 +162,7 @@ class StatusResponse(BaseModel):
     status: QueryStatus = Field(..., description="Current status: 'processing', 'completed', or 'error'.")
     summaries: Optional[List[PaperSummaryResponse]] = Field(default=None, description="List of summaries if status is 'completed'.")
     error_message: Optional[str] = Field(default=None, description="Error details if status is 'error'.")
-    timestamp: str = Field(default_factory=lambda: datetime.now(datetime.timezone.utc).isoformat())
+    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 class HistoryItem(BaseModel):
     query: str
@@ -211,7 +211,7 @@ async def process_question_background(
     Fetches papers based on keywords, stores abstracts, summarizes, updates storage, and caches results.
     """
     logger.info(f"Background task started for query: '{original_query[:100]}...'")
-    task_start_time = datetime.now(datetime.timezone.utc)
+    task_start_time = datetime.now(timezone.utc)
     processed_paper_sql_ids = [] # Keep track of IDs for caching
     # Ensure cache entry exists with 'processing' status initially
     await sql_db_dep.cache_query(original_query, status=QueryStatus.PROCESSING)
@@ -403,7 +403,7 @@ async def process_question_background(
              # Cache COMPLETED status with empty list
             await sql_db_dep.cache_query(original_query, [], status=QueryStatus.COMPLETED)
 
-        task_end_time = datetime.now(datetime.timezone.utc)
+        task_end_time = datetime.now(timezone.utc)
         duration = task_end_time - task_start_time
         logger.info(f"Background task for query '{original_query[:100]}...' completed successfully in {duration}.")
 
