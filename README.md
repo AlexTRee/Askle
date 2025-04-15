@@ -40,4 +40,4 @@ Please create on your own branch and pull from `main` periodically to get the la
 <br>
 
 
-<sup><i>© Tiange Cui</i> 2025. All rights reserved. This software is not open source.</sup>
+<sup><i>© Modiscope AI</i> 2025. All rights reserved. This software is not open source.</sup>
